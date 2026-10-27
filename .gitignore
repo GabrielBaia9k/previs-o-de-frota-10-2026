@@ -8,7 +8,6 @@ precompilacao/
 rsconnect/
 
 # Local data and user feedback; may be sensitive or too large for GitHub.
-/data/
 /feedback_data.csv
 
 # Secrets and local credentials.
