@@ -15,14 +15,14 @@
 \sloppy
 \pagestyle{empty}
 
-\title{Previsões}
+\title{Análise e Comparação entre Algoritmos de Previsão de Séries Temporais Para a Previsão de Frota Veicular.}
 
 \newif\iffinal
 \finaltrue % Use \finalfalse para omitir a autoria na revisao cega.
 
 
 \iffinal
-\author{Mário Diego Rocha Valente\inst{1}, Gabriel Baia da Silva\inst{2},
+\author{Mário Diego Rocha Valente\inst{1}, Gabriel Baia da Silva\inst{2}, \\
 Kleber Bezerra Salim\inst{1}, Tito Félix de Oliveira\inst{3}}
 
 \address{Gerência de Estatística -- DETRAN\\
@@ -57,12 +57,7 @@ Belém -- PA -- Brasil
 
 \end{resumo}
 
-% O modelo SBC nao inclui blocos de palavras-chave. Termos preservados
-% para uso caso a chamada do evento os exija:
-% Keywords: Analytical Dashboard; Interactive Visualization; Temporal Series;
-% Predictive Modeling; Deep Learning; Public Transparency.
-% Palavras-chave: Dashboard Analítico; Visualização Interativa; Séries Temporais;
-% Modelagem Preditiva; Aprendizado Profundo; Transparência Pública.
+\newpage
 
 % ===================== CORPO DO ARTIGO =====================
 
@@ -76,65 +71,74 @@ Belém -- PA -- Brasil
 
 %---------------------------------------------------------------------------%
 
-\section{Materiais e Métodos}
+\section{Materiais e Métodos (CRISP DM)}
 
-
+6 passos do CRISP DM serão re aplicados sobre o dataset e usados para a previsão.
 %----------------------------------------------------------------------------------%
 
 \section{Modelagem Estatística e Deep Learning}
 
-Adotou-se a abordagem de \textit{storytelling} analítico de Knaflic (2019) para projetar os dados espacialmente e temporalmente. As seções a seguir fundamentam os algoritmos preditivos empregados. 
+\subsection{SARIMAX como Modelo Estatístico de Referência}
 
-\subsection{Modelos Estatísticos Clássicos (Família ARIMA)}
-Os modelos estatísticos clássicos pertencentes à família ARIMA são amplamente empregados por sua capacidade nativa de absorver tendências seculares e padrões de autocorrelação \cite{box1970time}. O modelo base $\textbf{ARIMA(p,d,q)}$ é dado por~(\ref{eq:arima}).
-
-\begin{equation}
-\phi(L)\Delta^{d} y_{t} = \theta(L)\varepsilon_{t}
-\label{eq:arima}
-\end{equation}
-
-Em que $\phi(L)$ e $\theta(L)$ representam, respectivamente, os componentes autorregressivo e de médias móveis, cujas ordens são dadas por $p$ e $q$; $d$ é o grau de diferenciação integrativa, $L$ é o operador de defasagem e $\varepsilon_t$ representa o ruído branco. A sazonalidade de 12 meses observada na arrecadação de IPVA e licenciamentos é tratada no $SARIMA(p,d,q)(P,D,Q)_{12}$, Equação~(\ref{eq:sarima}).
+O modelo SARIMAX foi adotado como \textit{baseline} estatístico para a comparação com os algoritmos de aprendizado de máquina. Sua escolha decorre da capacidade de representar dependências temporais e sazonalidade, incorporando também regressores exógenos \cite{hyndman2021forecasting}. Para séries mensais, o modelo $SARIMAX(p,d,q)(P,D,Q)_{12}$ pode ser representado pela Equação~\ref{eq:sarimax}.
 
 \begin{equation}
-\phi(L)\Phi(L^{12})\Delta^{d}\Delta_{12}^{D} y_{t} = \theta(L)\Theta(L^{12})\varepsilon_{t}
-\label{eq:sarima}
-\end{equation}
-
-Em que $\Phi(L^{12})$ e $\Theta(L^{12})$ representam os componentes sazonais autorregressivo e de médias móveis, cujas ordens são dadas por $P$ e $Q$, enquanto $D$ corresponde ao grau de diferenciação sazonal.
-
-Para mitigação de anomalias econômicas, aplicou-se o modelo avançado $SARIMAX(p,d,q)(P,D,Q)_{12}$, Equação~(\ref{eq:sarimax}), que incorpora uma matriz de regressores exógenos ($X_t$).
-
-\begin{equation}
-\phi(L)\Phi(L^{12})\Delta^{d}\Delta_{12}^{D} y_{t} = \theta(L)\Theta(L^{12})\varepsilon_{t} + \beta X_{t}
+\phi(L)\Phi(L^{12})\Delta^{d}\Delta_{12}^{D}
+\left(y_t-\boldsymbol{\beta}^{\top}\mathbf{X}_t\right)
+=
+\theta(L)\Theta(L^{12})\varepsilon_t
 \label{eq:sarimax}
 \end{equation}
 
-O vetor $X_t$ modelou de forma exógena as retrações macroeconômicas sofridas pelo Brasil (2013--2017), servindo como intervenção de "pulso" para garantir a estabilidade assintótica a longo prazo.
+Nessa expressão, $y_t$ representa a série modelada,
+$\mathbf{X}_t$ é o vetor de regressores exógenos e
+$\boldsymbol{\beta}$ contém seus coeficientes.
+Os polinômios $\phi(L)$ e $\theta(L)$ representam os componentes
+autorregressivo e de médias móveis, de ordens $p$ e $q$;
+$\Phi(L^{12})$ e $\Theta(L^{12})$ representam os componentes
+sazonais, de ordens $P$ e $Q$. Os parâmetros $d$ e $D$
+indicam as ordens de diferenciação regular e sazonal,
+$L$ é o operador de defasagem e $\varepsilon_t$ representa o ruído branco.
+
+Na implementação, incluiu-se como regressor exógeno um
+indicador binário referente ao intervalo de 2013 a 2017.
+Os resultados do SARIMAX constituem a referência para
+quantificar os ganhos ou perdas de desempenho preditivo
+dos demais algoritmos avaliados.
+
+\subsection{Modelo Prophet}
+
+\subsection{Modelo XGBoost}
+
+\subsection{Modelo TCN}
 
 \subsection{Redes Neurais Recorrentes e Modelagem Tensorial (GRU)}
 
 Para a captura de não linearidades severas de longo alcance, projetaram-se arquiteturas de \textit{Deep Learning}: \textbf{LSTM} (\textit{Long Short-Term Memory}) e \textbf{GRU} (\textit{Gated Recurrent Unit}). A implementação utilizou \texttt{keras} e \texttt{tensorflow} via R, otimizada com Adam e backpropagation-through-time (BPTT).
 
-\begin{figure}[!ht]
+\begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.9\columnwidth]{LSTM.png}
-    \caption{Representação da célula LSTM
-    \cite{ghojogh2023recurrentneuralnetworkslong}.}
-    \label{fig:lstm}
-\end{figure}
-\begin{figure}[!ht]
-    \centering
-   \includegraphics[width=0.9\columnwidth]{GRU.png}
-    \caption{Representação da célula GRU
-    \cite{ghojogh2023recurrentneuralnetworkslong}.}
-    \label{fig:celula_gru}
+    \begin{minipage}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{LSTM.png}
+        \caption{Representação da célula LSTM
+        \cite{ghojogh2023recurrentneuralnetworkslong}.}
+        \label{fig:lstm}
+    \end{minipage}\hfill
+    \begin{minipage}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{GRU.png}
+        \caption{Representação da célula GRU
+        \cite{ghojogh2023recurrentneuralnetworkslong}.}
+        \label{fig:celula_gru}
+    \end{minipage}
 \end{figure}
 
 Redes neurais recorrentes convencionais frequentemente esbarram na limitação do gradiente descendente (\textit{vanishing gradient}), o que dificulta o aprendizado de dependências temporais extensas. A arquitetura LSTM resolve esse problema introduzindo mecanismos de controle de fluxo de informação chamados de portões (\textit{gates}): o portão de esquecimento (\textit{forget gate}), responsável por descartar dados irrelevantes; o portão de entrada (\textit{input gate}), que assimila novas informações à memória; e o portão de saída (\textit{output gate}), responsável por transmitir os valores processados para os estados subsequentes da rede \cite{hochreiter1997}.
 
-\begin{table}[htbp]
-\setlength{\tabcolsep}{3pt}
-\renewcommand{\arraystretch}{1.1}
+\begin{table}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{0.9}
 \centering
 \caption{Comparação dos parâmetros utilizados nos modelos LSTM e GRU global.}
 \label{tab:parametros_redes}
@@ -289,19 +293,6 @@ $$z = \frac{x - \mu}{\sigma}$$
 Onde $\mu$ é a média histórica e $\sigma$ é o desvio padrão da frota do município. Após essa etapa geométrica, os vetores padronizados foram acoplados aos \textit{lags} temporais, originando uma matriz de $N$ colunas. Esse arranjo estrutural resulta num \textit{tensor de entrada global} tridimensional. Essa topologia força a camada densa da GRU a transferir a \textit{feature representation} dos padrões de crescimento de grandes polos urbanos para mitigar as dinâmicas escassas de municípios menores.
 
 %-------------------------------------------------------------------------------%
-\subsection{Subsistema de Relatórios Parametrizados (Quarto)}
-
-
-%-------------------------------------------------------------------------------%
-\subsection{Metodologia de Deployment e Integração Contínua}
-
-Para garantir resiliência e alta disponibilidade, implementou-se um fluxo \textit{DevOps} e CI/CD (Integração/Entrega Contínuas), ilustrado na Figura.~\ref{fig:deployment}. O ecossistema \textit{Podman} \cite{podman2026} atua na criação da imagem imutável do sistema operacional Linux que embala o código R, suas dependências sistêmicas (C++) e o código fonte. 
-
-O repositório é gerenciado via \textit{GitLab} CI, automatizando os testes e enviando as imagens para o \textit{Registry}. O cluster Kubernetes \cite{burns2016borgomega} consome essas imagens, orquestrando réplicas de contêineres (\textit{Pods}) conforme a demanda. Um dos principais desafios técnicos de aplicações assíncronas baseadas em soquetes (Shiny) sob balanceamento de carga é a perda de estado. Isso foi solucionado configurando-se o \textit{Ingress Controller} do Kubernetes com "afinidade de sessão" (\textit{sticky sessions} via \textit{cookies}). 
-
-Tal técnica, combinada com protocolo criptografado estrito (WSS - \textit{WebSocket Secure}), garante que requisições longas, como a compilação paralela de pesados PDFs em LaTeX pelo \textit{Quarto}, não sofram \textit{timeout} ou interrupções de rota.
-
-
 \section{Resultados e Discussão}
 
 \subsection{Resultados da Modelagem e Avaliação Preditiva}
@@ -327,7 +318,7 @@ Em que $k$ representa o número de parâmetros estimados de forma independente p
 
 Entre os algoritmos estatísticos, o SARIMAX capturou de forma exímia os resíduos sazonais de 12 meses (IPVA) e as quebras estruturais induzidas por instabilidades fiscais anteriores. Ele obteve um MAPE de 5,78\% e coeficiente de determinação global ($R^2$) de 0,7240, o gráfico é mostrado na Fig.~\ref{fig:sarimax}.
 
-\begin{figure}[!ht]
+\begin{figure}
     \centering
     \includegraphics[width=\linewidth]{GraficoSarimax.png}
     \caption{Previsão estatística de crescimento obtida com o modelo SARIMAX.}
@@ -336,7 +327,7 @@ Entre os algoritmos estatísticos, o SARIMAX capturou de forma exímia os resíd
 
 Nas redes neurais complexas, o cenário difere. O LSTM enfrentou o problema de dados escassos, levando a uma série que não capturou a sazonalidade da série da mesma forma. Entretanto, a otimização algorítmica e topológica executada sobre o GRU, embasada no Tensor Global Multidimensional (descrito na metodologia), resultou em predições fiéis ao comportamento das curvas, mostrado na Fig.~\ref{fig:gru}.
 
-\begin{figure}[!ht]
+\begin{figure}
     \centering
     \includegraphics[width=\linewidth]{GraficoGRU.png}
     \caption{Projeção suavizada obtida com a arquitetura tensorial do GRU.}
@@ -346,11 +337,11 @@ Nas redes neurais complexas, o cenário difere. O LSTM enfrentou o problema de d
 Os algoritmos foram validados com uma janela de teste de 12 meses no final do treinamento. As métricas comparativas consolidadas de validação (\textit{test-set evaluation}) entre as metodologias testadas estão expostas na Tabela~\ref{tab:comparacao_modelos}. A eficácia do algoritmo GRU evidenciou-se na obtenção do menor erro da rodada ($MAPE = 5,19\%$). Sua matriz simplificada de dois gates reduziu o montante paramétrico que necessitava ser aprendido.
 
 \begin{table}[!ht]
-\renewcommand{\arraystretch}{1.3}
+\renewcommand{\arraystretch}{0.9}
 \centering
 \caption{Comparação das métricas de desempenho no conjunto de validação dos modelos testados.}
 \label{tab:comparacao_modelos}
-\resizebox{\columnwidth}{!}{%
+
 \begin{tabular}{lcccccc}
 \toprule
 \textbf{Modelo} & \textbf{MAPE} & \textbf{MAE} & \textbf{RMSE} & \textbf{AIC} & \textbf{BIC} & \textbf{$R^2$} \\
@@ -362,7 +353,7 @@ SARIMA  & 6,75 & 1,406 & 1,660 & 181,94 & 182,91 & 0,6111 \\
 SARIMAX & 5,78 & 1,198 & \textbf{1,398} & \textbf{177,83} & \textbf{178,80} & \textbf{0,7240} \\
 \bottomrule
 \end{tabular}%
-}
+
 \end{table}
 
 A engenharia preditiva combinada (mais de 140 municípios versus 84 meses efetivos) alimentou a rede neural com mais de 12 mil exemplos de treinamento, viabilizando o entendimento do crescimento como um tecido interligado. 
