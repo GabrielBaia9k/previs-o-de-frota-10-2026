@@ -1,10 +1,14 @@
 # ==============================================================================
-# previsoes_todos.R | LSTM-GRU-PERDAS-GRADIENTES-1
+# previsoes_todos.R | CSV-PREVISOES-OUTPUT-1
 # Substitua INTEGRALMENTE modulos/previsoes_todos.R por este arquivo.
 #
 # Mantem as chamadas existentes:
 #   previsoes_todos_ui("previsoes_todos")
 #   previsoes_todos_server("previsoes_todos")
+#
+# Previsoes: seis arquivos CSV em Previsoes_output/ (incluindo SARIMAX).
+# Historicos e gradientes: permanecem em data/.
+# Os diretorios podem ser configurados nos argumentos do servidor.
 #
 # Fontes dos graficos de perdas:
 #   data/historico_perdas_lstm.csv
@@ -22,7 +26,7 @@
 # Previsoes mensais aparecem em tabela e no grafico de 2016 a 2031.
 # ==============================================================================
 
-previsoes_todos_versao <- "LSTM-GRU-PERDAS-4-R2-2016-2031-SERIE-UNICA"
+previsoes_todos_versao <- "LSTM-GRU-PERDAS-5-CSV-PREVISOES-OUTPUT"
 
 # --- Leitura e validacao --------------------------------------------------------
 
@@ -86,8 +90,12 @@ pt_ler_historico <- function(caminho, modelo_esperado) {
     obrigatorias <- c("Modelo", "Localidade", "Epoca", "Loss")
     faltantes <- setdiff(obrigatorias, names(dados))
     if (length(faltantes)) {
-      stop("Colunas ausentes no histórico: ", paste(faltantes, collapse = ", "),
-           ". Use o CSV gravado pelo treinamento do modelo esperado.", call. = FALSE)
+      stop(
+        "Colunas ausentes no histórico: ",
+        paste(faltantes, collapse = ", "),
+        ". Use o CSV gravado pelo treinamento do modelo esperado.",
+        call. = FALSE
+      )
     }
     if (!"Val_Loss" %in% names(dados)) {
       dados$Val_Loss <- rep(NA_character_, nrow(dados))
@@ -117,11 +125,17 @@ pt_ler_historico <- function(caminho, modelo_esperado) {
     if (identical(modelo_esperado, "GRU")) {
       global <- !is.na(dados$Localidade) & toupper(dados$Localidade) == "GLOBAL"
       if (any(!global)) {
-        avisos <- c(avisos, "GRU: registros fora de Localidade='Global' foram ignorados.")
+        avisos <- c(
+          avisos,
+          "GRU: registros fora de Localidade='Global' foram ignorados."
+        )
       }
       dados <- dados[global, , drop = FALSE]
       if (!nrow(dados)) {
-        stop("O histórico GRU deve identificar Localidade='Global'.", call. = FALSE)
+        stop(
+          "O histórico GRU deve identificar Localidade='Global'.",
+          call. = FALSE
+        )
       }
       dados$Localidade <- "Global"
     }
@@ -130,11 +144,14 @@ pt_ler_historico <- function(caminho, modelo_esperado) {
       dados$Epoca <= .Machine$integer.max & dados$Epoca == floor(dados$Epoca)
     if (any(!chaves_validas)) {
       avisos <- c(avisos, paste(
-        sum(!chaves_validas), "registro(s) com localidade ou época inválida foram ignorados."
+        sum(!chaves_validas),
+        "registro(s) com localidade ou época inválida foram ignorados."
       ))
     }
     dados <- dados[chaves_validas, , drop = FALSE]
-    if (!nrow(dados)) stop("Não há épocas válidas no histórico.", call. = FALSE)
+    if (!nrow(dados)) {
+      stop("Não há épocas válidas no histórico.", call. = FALSE)
+    }
     dados$Epoca <- as.integer(dados$Epoca)
     if (anyDuplicated(dados[c("Localidade", "Epoca")])) {
       stop(paste(
@@ -153,23 +170,30 @@ pt_ler_historico <- function(caminho, modelo_esperado) {
       dados[[coluna]][invalidos] <- NA_real_
     }
     if (!any(is.finite(dados$Loss))) {
-      stop("A coluna Loss não contém perdas de treinamento numéricas válidas.",
-           call. = FALSE)
+      stop(
+        "A coluna Loss não contém perdas de treinamento numéricas válidas.",
+        call. = FALSE
+      )
     }
     if (!any(is.finite(dados$Val_Loss))) {
-      avisos <- c(avisos, "Val_Loss ausente: somente a perda de treino será desenhada.")
+      avisos <- c(
+        avisos,
+        "Val_Loss ausente: somente a perda de treino será desenhada."
+      )
     }
     # Nao elimina Loss quando Val_Loss esta ausente (e vice-versa).
     dados <- dados[order(dados$Localidade, dados$Epoca), , drop = FALSE]
     rownames(dados) <- NULL
     list(dados = dados, erro = NULL, avisos = avisos, caminho = caminho)
   }, error = function(e) {
-    list(dados = pt_historico_vazio(), erro = conditionMessage(e),
-         avisos = avisos, caminho = caminho)
+    list(
+      dados = pt_historico_vazio(),
+      erro = conditionMessage(e),
+      avisos = avisos,
+      caminho = caminho
+    )
   })
 }
-
-
 
 # --- Histórico de gradientes do LSTM -------------------------------------------
 
@@ -206,6 +230,7 @@ pt_ler_gradientes_lstm <- function(caminho) {
     )
 
     faltantes <- setdiff(obrigatorias, names(dados))
+
     if (length(faltantes)) {
       stop(
         "Colunas ausentes no histórico de gradientes: ",
@@ -245,7 +270,10 @@ pt_ler_gradientes_lstm <- function(caminho) {
     }
 
     if (!nrow(dados)) {
-      stop("O histórico de gradientes não possui registros válidos.", call. = FALSE)
+      stop(
+        "O histórico de gradientes não possui registros válidos.",
+        call. = FALSE
+      )
     }
 
     dados$Epoca <- as.integer(dados$Epoca)
@@ -260,7 +288,10 @@ pt_ler_gradientes_lstm <- function(caminho) {
     }
 
     if (!any(is.finite(dados$Norma_Gradiente))) {
-      stop("Norma_Gradiente não possui valores numéricos válidos.", call. = FALSE)
+      stop(
+        "Norma_Gradiente não possui valores numéricos válidos.",
+        call. = FALSE
+      )
     }
 
     if (anyDuplicated(dados[c("Localidade", "Epoca")])) {
@@ -286,98 +317,151 @@ pt_ler_gradientes_lstm <- function(caminho) {
 pt_previsoes_vazias <- function() {
   data.frame(
     Modelo = character(), Localidade = character(), Data = as.Date(character()),
-    Real = numeric(), Previsao = numeric(), stringsAsFactors = FALSE
+    Real = numeric(), Previsao = numeric(), AIC = numeric(), BIC = numeric(),
+    stringsAsFactors = FALSE
   )
 }
 
-pt_carregar_previsoes <- function(data_dir) {
+pt_carregar_previsoes <- function(data_dir = here::here("Previsoes_output")) {
   especificacoes <- data.frame(
     Modelo = c("LSTM", "GRU", "ARIMA", "ETS", "SARIMA", "SARIMAX"),
     Arquivo = c(
       "previsoes_lstm_pre_comp.csv", "previsoes_gru_global_pre_comp.csv",
       "previsoes_arima_pre_comp.csv", "previsoes_ets_pre_comp.csv",
-      "previsoes_sarima_pre_comp.csv", "previsoes_sarimax_pre_comp.parquet"
+      "previsoes_sarima_pre_comp.csv", "previsoes_sarimax_pre_comp.csv"
     ),
     stringsAsFactors = FALSE
   )
+
   resultados <- list()
   avisos <- character()
+
   for (i in seq_len(nrow(especificacoes))) {
     modelo <- especificacoes$Modelo[i]
     caminho <- file.path(data_dir, especificacoes$Arquivo[i])
+
     resultado <- tryCatch({
-      if (!file.exists(caminho)) stop("arquivo não encontrado", call. = FALSE)
-      if (modelo == "SARIMAX") {
-        dados <- arrow::open_dataset(caminho) |>
-          dplyr::select(Localidade_Nome, Data, Real, Previsao_SARIMAX) |>
-          dplyr::collect()
-        dados$Localidade <- dados$Localidade_Nome
-      } else {
-        dados <- pt_ler_csv(caminho)
+      if (!file.exists(caminho)) {
+        stop("arquivo não encontrado: ", caminho, call. = FALSE)
       }
+
+      # Todos os algoritmos geram CSV com Localidade e Previsao_<MODELO>.
+      dados <- pt_ler_csv(caminho)
+
+      if (!nrow(dados)) {
+        stop("CSV sem registros: ", caminho, call. = FALSE)
+      }
+
       coluna <- paste0("Previsao_", modelo)
-      faltantes <- setdiff(c("Localidade", "Data", "Real", coluna), names(dados))
+
+      faltantes <- setdiff(
+        c("Localidade", "Data", "Real", coluna),
+        names(dados)
+      )
+
       if (length(faltantes)) {
-        stop("colunas ausentes: ", paste(faltantes, collapse = ", "), call. = FALSE)
+        stop(
+          "colunas ausentes: ",
+          paste(faltantes, collapse = ", "),
+          call. = FALSE
+        )
       }
+
       data.frame(
         Modelo = rep(modelo, nrow(dados)),
         Localidade = pt_normalizar_localidade(dados$Localidade),
         Data = as.Date(dados$Data),
         Real = pt_numero(dados$Real),
         Previsao = pt_numero(dados[[coluna]]),
+        AIC = if ("AIC" %in% names(dados)) {
+          pt_numero(dados$AIC)
+        } else {
+          rep(NA_real_, nrow(dados))
+        },
+        BIC = if ("BIC" %in% names(dados)) {
+          pt_numero(dados$BIC)
+        } else {
+          rep(NA_real_, nrow(dados))
+        },
         stringsAsFactors = FALSE
       )
     }, error = function(e) {
-      avisos <<- c(avisos, paste0(modelo, ": ", conditionMessage(e)))
+      avisos <<- c(
+        avisos,
+        paste0(modelo, ": ", conditionMessage(e))
+      )
       NULL
     })
-    if (!is.null(resultado)) resultados[[modelo]] <- resultado
+
+    if (!is.null(resultado)) {
+      resultados[[modelo]] <- resultado
+    }
   }
-  dados <- if (length(resultados)) do.call(rbind, resultados) else pt_previsoes_vazias()
+
+  dados <- if (length(resultados)) {
+    do.call(rbind, resultados)
+  } else {
+    pt_previsoes_vazias()
+  }
+
   # Para o seletor e os joins, usa grafia LSTM (ou SARIMAX) quando a
   # localidade da GRU tem a mesma chave sem acentos/caixa.
   rotulos <- dados[
     dados$Modelo %in% c("LSTM", "SARIMAX") &
       !is.na(dados$Localidade) & nzchar(dados$Localidade),
-    c("Modelo", "Localidade"), drop = FALSE
+    c("Modelo", "Localidade"),
+    drop = FALSE
   ]
+
   if (nrow(rotulos)) {
-    rotulos <- rotulos[order(match(rotulos$Modelo, c("LSTM", "SARIMAX"))), , drop = FALSE]
+    rotulos <- rotulos[
+      order(match(rotulos$Modelo, c("LSTM", "SARIMAX"))),
+      ,
+      drop = FALSE
+    ]
+
     chaves_rotulos <- pt_chave_localidade(rotulos$Localidade)
     rotulos <- rotulos[!duplicated(chaves_rotulos), , drop = FALSE]
     chaves_rotulos <- pt_chave_localidade(rotulos$Localidade)
+
     idx <- match(pt_chave_localidade(dados$Localidade), chaves_rotulos)
     encontrados <- which(!is.na(idx))
+
     dados$Localidade[encontrados] <- rotulos$Localidade[idx[encontrados]]
   }
+
   rownames(dados) <- NULL
   list(dados = dados, avisos = avisos)
 }
 
 pt_tabela_previsoes <- function(dados) {
   if (!nrow(dados)) return(data.frame())
+
   reais <- dados |>
     dplyr::filter(!is.na(Data), !is.na(Real)) |>
     dplyr::arrange(dplyr::desc(Modelo == "GRU")) |>
     dplyr::group_by(Data) |>
     dplyr::summarise(Real = Real[1], .groups = "drop")
+
   previstas <- dados |>
     dplyr::filter(!is.na(Data)) |>
     dplyr::group_by(Data, Modelo) |>
     dplyr::summarise(
-      Previsao = if (all(is.na(Previsao))) NA_real_ else Previsao[which(!is.na(Previsao))[1]],
+      Previsao = if (all(is.na(Previsao))) {
+        NA_real_
+      } else {
+        Previsao[which(!is.na(Previsao))[1]]
+      },
       .groups = "drop"
     ) |>
     tidyr::pivot_wider(names_from = Modelo, values_from = Previsao)
+
   dplyr::full_join(reais, previstas, by = "Data") |>
     dplyr::arrange(Data) |>
     dplyr::rename("Frota Real" = Real)
 }
 
-
-
-# --- Projeções LSTM × GRU e métricas de erro -------------------------------
+# --- Projeções LSTM × GRU e métricas de erro ------------------------------------
 
 pt_reais_projecao <- function(dados_completos, localidade) {
   reais <- dados_completos[
@@ -437,7 +521,11 @@ pt_dados_projecoes_comparacao <- function(dados, localidade) {
   # série estadual "Pará" usa o registro Global. Não se faz essa
   # substituição para municípios, pois isso misturaria escalas diferentes.
   if (identical(localidade, "Pará")) {
-    gru_local <- locais_modelos[locais_modelos$Modelo == "GRU", , drop = FALSE]
+    gru_local <- locais_modelos[
+      locais_modelos$Modelo == "GRU",
+      ,
+      drop = FALSE
+    ]
 
     if (!nrow(gru_local)) {
       gru_global <- base[
@@ -489,8 +577,10 @@ pt_tabela_erros_projecoes <- function(
         toupper(dados_completos$Localidade) == "GLOBAL")) &
       dados_completos$Modelo %in% c("LSTM", "GRU") &
       !is.na(dados_completos$Data) & is.finite(dados_completos$Real),
-    c("Modelo", "Data", "Real"), drop = FALSE
+    c("Modelo", "Data", "Real"),
+    drop = FALSE
   ]
+
   reais <- reais |>
     dplyr::group_by(Modelo, Data) |>
     dplyr::summarise(Real = dplyr::first(Real), .groups = "drop")
@@ -620,11 +710,11 @@ pt_desenhar_projecoes <- function(
   )
 
   graphics::mtext(
-  "Quantidade de veículos",
-  side = 2,
-  line = 4.6,
-  las = 0
-)
+    "Quantidade de veículos",
+    side = 2,
+    line = 4.6,
+    las = 0
+  )
 
   marcas <- pretty(datas, n = 10)
   graphics::axis.Date(1, at = marcas, format = "%b/%Y")
@@ -681,7 +771,6 @@ pt_desenhar_projecoes <- function(
 
     parte <- parte[order(parte$Data), , drop = FALSE]
 
-    # A GRU e prevista recursivamente, em um so ajuste, de 2025 a 2031.
     graphics::lines(
       parte$Data, parte$Previsao,
       col = cores[[modelo]], lwd = 2
@@ -766,7 +855,9 @@ pt_dados_perdas_comparacao <- function(historico_lstm, historico_gru, localidade
   # selecionada na tabela.
   if (pt_historico_disponivel(historico_gru)) {
     gru <- historico_gru$dados[
-      historico_gru$dados$Localidade %in% "Global", , drop = FALSE
+      historico_gru$dados$Localidade %in% "Global",
+      ,
+      drop = FALSE
     ]
 
     if (nrow(gru) > 0L) {
@@ -841,8 +932,14 @@ pt_desenhar_perdas <- function(dados, localidade) {
   )
   graphics::axis(1, at = marcas_x, labels = marcas_x)
   graphics::grid(nx = NA, ny = NULL, col = "#e5e7eb", lty = 1)
-  graphics::mtext("Perdas de treinamento e validação", side = 3,
-                  line = 3.6, font = 2, cex = 1.1)
+  graphics::mtext(
+    "Perdas de treinamento e validação",
+    side = 3,
+    line = 3.6,
+    font = 2,
+    cex = 1.1
+  )
+
   escopos <- character()
   if (any(grepl("^LSTM_", dados$Serie))) {
     escopos <- c(escopos, paste("LSTM:", localidade))
@@ -850,7 +947,12 @@ pt_desenhar_perdas <- function(dados, localidade) {
   if (any(grepl("^GRU_", dados$Serie))) {
     escopos <- c(escopos, "GRU: modelo global")
   }
-  graphics::mtext(paste(escopos, collapse = " | "), side = 3, line = 2.4, cex = 0.82)
+  graphics::mtext(
+    paste(escopos, collapse = " | "),
+    side = 3,
+    line = 2.4,
+    cex = 0.82
+  )
 
   series <- c(
     "LSTM_Treino",
@@ -888,15 +990,21 @@ pt_desenhar_perdas <- function(dados, localidade) {
     if (!nrow(serie_dados) || !any(is.finite(serie_dados$Valor))) next
 
     serie_dados <- serie_dados[order(serie_dados$Epoca), , drop = FALSE]
+
     # Nao une lacunas de epocas nem prolonga a GRU ate a ultima epoca da LSTM.
     grupos <- cumsum(c(TRUE, diff(serie_dados$Epoca) != 1L))
+
     for (grupo in unique(grupos)) {
       pos <- which(grupos == grupo)
       graphics::lines(
-        serie_dados$Epoca[pos], serie_dados$Valor[pos],
-        col = cores[[serie]], lty = tipos[[serie]], lwd = 2
+        serie_dados$Epoca[pos],
+        serie_dados$Valor[pos],
+        col = cores[[serie]],
+        lty = tipos[[serie]],
+        lwd = 2
       )
     }
+
     validos <- is.finite(serie_dados$Valor)
     graphics::points(
       serie_dados$Epoca[validos],
@@ -914,9 +1022,14 @@ pt_desenhar_perdas <- function(dados, localidade) {
     ),
     logical(1)
   )]
+
   graphics::legend(
-    x = mean(limite_x), y = graphics::par("usr")[4],
-    xjust = 0.5, yjust = 0, xpd = NA, ncol = 2,
+    x = mean(limite_x),
+    y = graphics::par("usr")[4],
+    xjust = 0.5,
+    yjust = 0,
+    xpd = NA,
+    ncol = 2,
     legend = unname(rotulos[presentes]),
     col = unname(cores[presentes]),
     lty = unname(tipos[presentes]),
@@ -926,10 +1039,9 @@ pt_desenhar_perdas <- function(dados, localidade) {
     bty = "n",
     cex = 0.82
   )
+
   invisible(NULL)
 }
-
-
 
 # --- Gráfico dos gradientes ----------------------------------------------------
 
@@ -1037,26 +1149,41 @@ pt_desenhar_gradientes <- function(dados, localidade) {
 
 previsoes_todos_ui <- function(id) {
   ns <- shiny::NS(id)
+
   shiny::fluidPage(
     shiny::fluidRow(
       bs4Dash::box(
         title = "Resultados dos modelos e treinamento LSTM × GRU",
-        width = 12, status = "primary", solidHeader = FALSE,
+        width = 12,
+        status = "primary",
+        solidHeader = FALSE,
+
         shiny::tags$p(
           shiny::tags$strong("Versão do módulo: "),
           shiny::tags$code(previsoes_todos_versao)
         ),
+
         shiny::fluidRow(
-          shiny::column(8, shiny::selectInput(
-            ns("select_local"), "MUNICÍPIO OU ESTADO", choices = character()
-          )),
-          shiny::column(4,
+          shiny::column(
+            8,
+            shiny::selectInput(
+              ns("select_local"),
+              "MUNICÍPIO OU ESTADO",
+              choices = character()
+            )
+          ),
+          shiny::column(
+            4,
             shiny::tags$br(),
-            shiny::actionButton(ns("recarregar"), "Recarregar arquivos")
+            shiny::actionButton(
+              ns("recarregar"),
+              "Recarregar arquivos"
+            )
           )
         )
       )
     ),
+
     shiny::fluidRow(
       bs4Dash::box(
         title = "Projeções pré-compiladas — LSTM × GRU",
@@ -1069,9 +1196,8 @@ previsoes_todos_ui <- function(id) {
           "Comparação das projeções pré-calculadas pelos dois modelos. ",
           "A linha real é mostrada apenas nos períodos em que há observação; ",
           "para ela, usa-se preferencialmente o valor real do CSV da GRU. ",
-          "A GRU usa um só modelo treinado até dez/2024 para prever, ",
-          "recursivamente, jan/2025 a dez/2031. Os valores reais de 2025 ",
-          "servem para avaliação e não alimentam essa previsão."
+          "As datas e os valores apresentados são os registrados nos arquivos ",
+          "CSV de previsão de cada modelo."
         ),
 
         shiny::uiOutput(ns("status_projecoes")),
@@ -1095,30 +1221,42 @@ previsoes_todos_ui <- function(id) {
         )
       )
     ),
+
     shiny::fluidRow(
       bs4Dash::box(
         title = "Perdas de treinamento e validação — LSTM × GRU",
-        width = 12, status = "primary", solidHeader = FALSE, maximizable = TRUE,
+        width = 12,
+        status = "primary",
+        solidHeader = FALSE,
+        maximizable = TRUE,
+
         shiny::tags$p(
           "Valores registrados pelo Keras durante fit(): Loss no treino e ",
           "Val_Loss na validação interna, por época. A função de perda é MSE ",
           "no alvo normalizado de cada rede. O LSTM corresponde à localidade selecionada; ",
-          "a GRU corresponde à seleção com validação em 2024. ",
-          "O único modelo GRU usado na série 2025–2031 tem histórico ",
-          "em historico_perdas_gru_teste.csv, sem validação interna. ",
-          "historico_perdas_gru_final.csv contém uma cópia do mesmo histórico. ",
+          "a GRU corresponde ao modelo global. Os históricos são lidos de ",
+          "historico_perdas_lstm.csv e historico_perdas_gru.csv, na pasta data. ",
           "Este gráfico não usa as previsões mensais."
         ),
+
         shiny::tags$p(
           "Eixo X: épocas. Eixo Y: perda MSE. Linhas contínuas: treino; ",
           "tracejadas: validação. Cada curva termina na última época gravada."
         ),
+
         shiny::uiOutput(ns("status_historico")),
         shiny::plotOutput(ns("grafico_perdas"), height = "520px"),
-        shiny::downloadButton(ns("baixar_perdas_png"), "Baixar gráfico PNG"),
-        shiny::downloadButton(ns("baixar_perdas_pdf"), "Baixar gráfico PDF")
+        shiny::downloadButton(
+          ns("baixar_perdas_png"),
+          "Baixar gráfico PNG"
+        ),
+        shiny::downloadButton(
+          ns("baixar_perdas_pdf"),
+          "Baixar gráfico PDF"
+        )
       )
     ),
+
     shiny::fluidRow(
       bs4Dash::box(
         title = "Diagnóstico dos gradientes do LSTM",
@@ -1145,22 +1283,32 @@ previsoes_todos_ui <- function(id) {
         )
       )
     ),
+
     shiny::fluidRow(
       bs4Dash::box(
         title = "Perdas registradas por época — LSTM × GRU",
-        width = 12, status = "primary", solidHeader = FALSE, collapsible = TRUE,
+        width = 12,
+        status = "primary",
+        solidHeader = FALSE,
+        collapsible = TRUE,
         DT::dataTableOutput(ns("tabela_perdas"))
       )
     ),
+
     shiny::fluidRow(
       bs4Dash::box(
         title = "Resultados pré-compilados por algoritmo",
-        width = 12, status = "primary", solidHeader = FALSE, collapsible = TRUE,
+        width = 12,
+        status = "primary",
+        solidHeader = FALSE,
+        collapsible = TRUE,
+
         shiny::tags$p(
           "Valores reais e previsões mensais. Esta tabela é independente ",
           "das perdas de treinamento exibidas acima. A coluna Frota Real ",
           "prefere o CSV da GRU, quando disponível."
         ),
+
         shiny::uiOutput(ns("status_previsoes")),
         DT::dataTableOutput(ns("tabela_resultados"))
       )
@@ -1170,24 +1318,33 @@ previsoes_todos_ui <- function(id) {
 
 # --- Servidor ------------------------------------------------------------------
 
-previsoes_todos_server <- function(id, data_dir = here::here("data")) {
+previsoes_todos_server <- function(
+    id,
+    data_dir = here::here("data"),
+    previsoes_dir = here::here("Previsoes_output")
+) {
   shiny::moduleServer(id, function(input, output, session) {
     caminho_historico_lstm <- normalizePath(
       file.path(data_dir, "historico_perdas_lstm.csv"),
-      winslash = "/", mustWork = FALSE
+      winslash = "/",
+      mustWork = FALSE
     )
+
     caminho_historico_gru <- normalizePath(
       file.path(data_dir, "historico_perdas_gru.csv"),
-      winslash = "/", mustWork = FALSE
+      winslash = "/",
+      mustWork = FALSE
     )
 
     caminho_gradientes_lstm <- normalizePath(
       file.path(data_dir, "historico_gradientes_lstm.csv"),
-      winslash = "/", mustWork = FALSE
+      winslash = "/",
+      mustWork = FALSE
     )
 
     arquivos <- shiny::reactive({
       input$recarregar
+
       list(
         historico_lstm = pt_ler_historico(
           caminho_historico_lstm,
@@ -1200,24 +1357,51 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
         gradientes_lstm = pt_ler_gradientes_lstm(
           caminho_gradientes_lstm
         ),
-        previsoes = pt_carregar_previsoes(data_dir)
+        previsoes = pt_carregar_previsoes(previsoes_dir)
       )
     })
 
     shiny::observe({
       carregado <- arquivos()
-      locais_historico <- unique(carregado$historico_lstm$dados$Localidade)
-      locais <- sort(unique(c(locais_historico, carregado$previsoes$dados$Localidade)))
+
+      locais_historico <- unique(
+        carregado$historico_lstm$dados$Localidade
+      )
+
+      locais <- sort(unique(c(
+        locais_historico,
+        carregado$previsoes$dados$Localidade
+      )))
+
       locais <- locais[!is.na(locais) & nzchar(locais)]
+
       atual <- shiny::isolate(input$select_local)
-      inicial <- if ("Pará" %in% locais_historico) "Pará" else {
-        if (length(locais_historico)) sort(locais_historico)[1] else head(locais, 1)
+
+      inicial <- if ("Pará" %in% locais_historico) {
+        "Pará"
+      } else {
+        if (length(locais_historico)) {
+          sort(locais_historico)[1]
+        } else {
+          head(locais, 1)
+        }
       }
-      selecionado <- if (length(atual) == 1L && atual %in% locais) atual else inicial
-      shiny::updateSelectInput(session, "select_local", choices = locais, selected = selecionado)
+
+      selecionado <- if (
+        length(atual) == 1L && atual %in% locais
+      ) {
+        atual
+      } else {
+        inicial
+      }
+
+      shiny::updateSelectInput(
+        session,
+        "select_local",
+        choices = locais,
+        selected = selecionado
+      )
     })
-
-
 
     projecoes_comparacao <- shiny::reactive({
       carregado <- arquivos()
@@ -1350,10 +1534,12 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
           "Verifique os arquivos historico_perdas_lstm.csv e historico_perdas_gru.csv."
         )
       ))
+
       shiny::validate(shiny::need(
         any(is.finite(dados$Valor)),
         "Não há valores numéricos de perda para desenhar."
       ))
+
       dados
     })
 
@@ -1361,7 +1547,11 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
       carregado <- arquivos()
       historico_lstm <- carregado$historico_lstm
       historico_gru <- carregado$historico_gru
-      aviso <- function(texto) shiny::tags$p(style = "color:#9a3412;", texto)
+
+      aviso <- function(texto) {
+        shiny::tags$p(style = "color:#9a3412;", texto)
+      }
+
       mensagens <- list(
         shiny::tags$p(
           shiny::tags$strong("LSTM — arquivo: "),
@@ -1392,6 +1582,7 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
         ,
         drop = FALSE
       ]
+
       if (nrow(dados_lstm)) {
         mensagens <- c(
           mensagens,
@@ -1402,14 +1593,20 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
           ))
         )
       } else if (is.null(historico_lstm$erro)) {
-        mensagens <- c(mensagens, list(aviso(
-          "LSTM: selecione uma localidade com histórico; somente a GRU disponível será exibida."
-        )))
+        mensagens <- c(
+          mensagens,
+          list(aviso(
+            "LSTM: selecione uma localidade com histórico; somente a GRU disponível será exibida."
+          ))
+        )
       }
 
       dados_gru <- historico_gru$dados[
-        historico_gru$dados$Localidade %in% "Global", , drop = FALSE
+        historico_gru$dados$Localidade %in% "Global",
+        ,
+        drop = FALSE
       ]
+
       if (nrow(dados_gru)) {
         mensagens <- c(
           mensagens,
@@ -1422,9 +1619,14 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
       }
 
       avisos <- c(
-        if (length(historico_lstm$avisos)) paste("LSTM:", historico_lstm$avisos),
-        if (length(historico_gru$avisos)) paste("GRU:", historico_gru$avisos)
+        if (length(historico_lstm$avisos)) {
+          paste("LSTM:", historico_lstm$avisos)
+        },
+        if (length(historico_gru$avisos)) {
+          paste("GRU:", historico_gru$avisos)
+        }
       )
+
       if (length(avisos)) {
         mensagens <- c(mensagens, lapply(avisos, aviso))
       }
@@ -1433,7 +1635,14 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
         mensagens,
         list(shiny::tags$p(
           style = "color:#4b5563;",
-          "A LSTM usa resíduo aditivo padronizado; a GRU usa ruído multiplicativo padronizado. Além dos alvos diferentes, as amostras e o número de atualizações por época diferem entre a rede local e a global. Este gráfico descreve o treinamento: menor perda entre modelos não demonstra maior precisão das previsões."
+          paste(
+            "A LSTM usa resíduo aditivo padronizado;",
+            "a GRU usa ruído multiplicativo padronizado.",
+            "Além dos alvos diferentes, as amostras e o número de",
+            "atualizações por época diferem entre a rede local e a global.",
+            "Este gráfico descreve o treinamento: menor perda entre",
+            "modelos não demonstra maior precisão das previsões."
+          )
         ))
       )
 
@@ -1441,11 +1650,15 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
     })
 
     output$grafico_perdas <- shiny::renderPlot({
-      pt_desenhar_perdas(perdas_comparacao(), input$select_local)
-    }, res = 96, execOnResize = TRUE,
-    alt = "Perdas de treinamento e validação do LSTM e da GRU por época.")
-
-
+      pt_desenhar_perdas(
+        perdas_comparacao(),
+        input$select_local
+      )
+    },
+    res = 96,
+    execOnResize = TRUE,
+    alt = "Perdas de treinamento e validação do LSTM e da GRU por época."
+    )
 
     gradientes_selecionados <- shiny::reactive({
       resultado <- arquivos()$gradientes_lstm
@@ -1479,7 +1692,10 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
       if (!is.null(resultado$erro)) {
         return(shiny::tags$p(
           style = "color:#B91C1C;",
-          paste("Arquivo de gradientes não disponível:", resultado$erro)
+          paste(
+            "Arquivo de gradientes não disponível:",
+            resultado$erro
+          )
         ))
       }
 
@@ -1496,8 +1712,15 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
         ))
       }
 
-      houve_nan <- any(dados$Gradiente_NaN %in% TRUE, na.rm = TRUE)
-      houve_inf <- any(dados$Gradiente_Inf %in% TRUE, na.rm = TRUE)
+      houve_nan <- any(
+        dados$Gradiente_NaN %in% TRUE,
+        na.rm = TRUE
+      )
+
+      houve_inf <- any(
+        dados$Gradiente_Inf %in% TRUE,
+        na.rm = TRUE
+      )
 
       mensagem <- paste(
         "Arquivo:", caminho_gradientes_lstm,
@@ -1563,8 +1786,7 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
         options = list(
           pageLength = 10,
           scrollX = TRUE,
-          order = list(list(0, "asc"))
-        )
+          order = list(list(0, "asc")))
       ) |>
         DT::formatSignif(
           columns = colunas_numericas,
@@ -1574,6 +1796,7 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
 
     output$tabela_perdas <- DT::renderDataTable({
       dados <- perdas_comparacao()
+
       tabela <- dados |>
         tidyr::pivot_wider(
           names_from = Serie,
@@ -1588,7 +1811,13 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
         "GRU_Treino",
         "GRU_Validacao"
       )
-      tabela <- tabela[, intersect(ordem, names(tabela)), drop = FALSE]
+
+      tabela <- tabela[
+        ,
+        intersect(ordem, names(tabela)),
+        drop = FALSE
+      ]
+
       rotulos <- c(
         Epoca = "Época",
         LSTM_Treino = "LSTM — treino",
@@ -1598,9 +1827,14 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
       )
 
       DT::datatable(
-        tabela, rownames = FALSE,
+        tabela,
+        rownames = FALSE,
         colnames = unname(rotulos[names(tabela)]),
-        options = list(pageLength = 10, scrollX = TRUE, order = list(list(0, "asc")))
+        options = list(
+          pageLength = 10,
+          scrollX = TRUE,
+          order = list(list(0, "asc"))
+        )
       ) |>
         DT::formatSignif(
           columns = names(tabela)[names(tabela) != "Epoca"],
@@ -1610,49 +1844,128 @@ previsoes_todos_server <- function(id, data_dir = here::here("data")) {
 
     output$status_previsoes <- shiny::renderUI({
       avisos <- arquivos()$previsoes$avisos
+
       if (!length(avisos)) return(NULL)
+
       shiny::tags$details(
-        shiny::tags$summary("Arquivos de previsão indisponíveis (não impedem o gráfico de perdas)"),
-        shiny::tags$ul(lapply(avisos, shiny::tags$li))
+        shiny::tags$summary(
+          "Arquivos de previsão indisponíveis (não impedem o gráfico de perdas)"
+        ),
+        shiny::tags$p(
+          "Pasta de previsões: ",
+          shiny::tags$code(previsoes_dir)
+        ),
+        shiny::tags$ul(
+          lapply(avisos, shiny::tags$li)
+        )
       )
     })
+
     output$tabela_resultados <- DT::renderDataTable({
       shiny::req(input$select_local)
+
       dados <- arquivos()$previsoes$dados
-      dados <- dados[dados$Localidade %in% input$select_local, , drop = FALSE]
+
+      dados <- dados[
+        dados$Localidade %in% input$select_local,
+        ,
+        drop = FALSE
+      ]
+
       tabela <- pt_tabela_previsoes(dados)
+
       shiny::validate(shiny::need(
-        nrow(tabela) > 0L, "Não há previsões pré-compiladas para esta localidade."
+        nrow(tabela) > 0L,
+        "Não há previsões pré-compiladas para esta localidade."
       ))
-      colunas <- names(tabela)[vapply(tabela, is.numeric, logical(1))]
-      DT::datatable(tabela, rownames = FALSE, options = list(pageLength = 15, scrollX = TRUE)) |>
-        DT::formatRound(columns = colunas, digits = 0)
+
+      colunas <- names(tabela)[
+        vapply(tabela, is.numeric, logical(1))
+      ]
+
+      DT::datatable(
+        tabela,
+        rownames = FALSE,
+        options = list(
+          pageLength = 15,
+          scrollX = TRUE
+        )
+      ) |>
+        DT::formatRound(
+          columns = colunas,
+          digits = 0
+        )
     })
 
     nome_download <- function(extensao) {
-      local <- if (length(input$select_local) == 1L) input$select_local else "global"
-      local <- iconv(local, from = "", to = "ASCII//TRANSLIT", sub = "")
+      local <- if (length(input$select_local) == 1L) {
+        input$select_local
+      } else {
+        "global"
+      }
+
+      local <- iconv(
+        local,
+        from = "",
+        to = "ASCII//TRANSLIT",
+        sub = ""
+      )
+
       local <- gsub("[^A-Za-z0-9_-]+", "_", local)
-      paste0("perdas_lstm_gru_", local, ".", extensao)
+
+      paste0(
+        "perdas_lstm_gru_",
+        local,
+        ".",
+        extensao
+      )
     }
+
     output$baixar_perdas_png <- shiny::downloadHandler(
-      filename = function() nome_download("png"), contentType = "image/png",
+      filename = function() nome_download("png"),
+      contentType = "image/png",
       content = function(file) {
         dados <- perdas_comparacao()
-        grDevices::png(file, width = 2400, height = 1400, res = 300, bg = "white")
+
+        grDevices::png(
+          file,
+          width = 2400,
+          height = 1400,
+          res = 300,
+          bg = "white"
+        )
+
         on.exit(grDevices::dev.off(), add = TRUE)
-        pt_desenhar_perdas(dados, input$select_local)
+
+        pt_desenhar_perdas(
+          dados,
+          input$select_local
+        )
       }
     )
+
     output$baixar_perdas_pdf <- shiny::downloadHandler(
-      filename = function() nome_download("pdf"), contentType = "application/pdf",
+      filename = function() nome_download("pdf"),
+      contentType = "application/pdf",
       content = function(file) {
         dados <- perdas_comparacao()
-        grDevices::pdf(file, width = 8, height = 4.7, onefile = FALSE)
+
+        grDevices::pdf(
+          file,
+          width = 8,
+          height = 4.7,
+          onefile = FALSE
+        )
+
         on.exit(grDevices::dev.off(), add = TRUE)
-        pt_desenhar_perdas(dados, input$select_local)
+
+        pt_desenhar_perdas(
+          dados,
+          input$select_local
+        )
       }
     )
+
     invisible(list(
       perdas = perdas_comparacao,
       projecoes = projecoes_comparacao,

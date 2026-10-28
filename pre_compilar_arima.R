@@ -155,8 +155,9 @@ cat("\n\nEmpilhando resultados de todos os municípios...\n")
 df_previsoes_arima_pronto <- bind_rows(lista_resultados_arima)
 
 # 10. Salva o Dataframe Final exportável em CSV
-caminho_saida <- "C:/Users/gabriel.baia/Documents/Projetos vscode/Dashboard_Frota_atualizado__Marco_2026/Previsoes_Output/previsoes_arima_pre_comp.csv"
-
+caminho_saida <- file.path(
+  "Previsoes_output", "previsoes_arima_pre_comp.csv"
+)
 # Cria o diretório se ele não existir
 dir.create(dirname(caminho_saida), showWarnings = FALSE, recursive = TRUE)
 

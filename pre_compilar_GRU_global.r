@@ -43,7 +43,9 @@ config <- list(
 
   # Arquivos produzidos pelo script
   arquivo_historico = "data/historico_perdas_gru.csv",
-  arquivo_previsoes = "data/previsoes_gru_global_pre_comp.csv"
+  arquivo_previsoes = file.path(
+  "Previsoes_output", "previsoes_gru_global_pre_comp.csv"
+  )
 )
 
 # O modelo recebe: 1 residuo + 12 indicadores mensais + 1 indicador por localidade.

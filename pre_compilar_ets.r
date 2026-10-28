@@ -109,7 +109,9 @@ df_previsoes_ets_pronto <- bind_rows(lista_resultados_ets)
 
 # 9. Salva o Dataframe Final exportável em CSV
 # Salvando na pasta "data" seguindo a estrutura do seu projeto original
-caminho_saida <- "data/previsoes_ets_pre_comp.csv"
+caminho_saida <- file.path(
+  "Previsoes_output", "previsoes_ets_pre_comp.csv"
+)
 
 # Cria o diretório (se não existir, embora saibamos que data/ existe)
 dir.create(dirname(caminho_saida), showWarnings = FALSE, recursive = TRUE)

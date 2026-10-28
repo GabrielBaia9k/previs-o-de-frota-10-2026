@@ -29,7 +29,7 @@ previsoes_ui <- function(id) {
         width = 12,
         fluidRow(
           column(
-            4,
+            3,
             selectInput(
               inputId = ns("filtro_ri"),
               label = "REGIAO DE INTEGRACAO",
@@ -39,7 +39,7 @@ previsoes_ui <- function(id) {
             )
           ),
           column(
-            6,
+            4,
             selectizeInput(
               inputId = ns("filtro_muni"),
               label = "MUNICIPIOS",
@@ -51,6 +51,16 @@ previsoes_ui <- function(id) {
                 placeholder = "Todos (clique ou digite para escolher especificamente)",
                 plugins = list("remove_button")
               )
+            )
+          ),
+          column(
+            3,
+            selectInput(
+              inputId = ns("filtro_modelo"),
+              label = "MODELO DE PREVISÃO",
+              choices = c("SARIMAX", "SARIMA", "ARIMA", "LSTM", "GRU"),
+              selected = "SARIMAX",
+              width = "100%"
             )
           ),
           column(

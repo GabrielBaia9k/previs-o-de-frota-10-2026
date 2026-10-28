@@ -33,6 +33,7 @@ invisible(lapply(core_pkgs, library, character.only = TRUE, quietly = TRUE, warn
 # 3. CARREGAMENTO DE DADOS (ARQUITETURA ARROW / LAZY EVALUATION)
 #------------------------------------------------------------------------------#
 data_dir <- here::here("data")
+previsoes_dir <- here::here("Previsoes_output")
 
 # MAPA ESPACIAL (Lido e Simplificado para economizar RAM)
 if (file.exists(file.path(data_dir, "geopa.rds"))) {

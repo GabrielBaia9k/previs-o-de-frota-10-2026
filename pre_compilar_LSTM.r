@@ -601,7 +601,9 @@ df_previsoes_lstm_pronto <- bind_rows(
   lista_resultados_lstm
 )
 
-caminho_saida <- "data/previsoes_lstm_pre_comp.csv"
+caminho_saida <- file.path(
+  "Previsoes_output", "previsoes_lstm_pre_comp.csv"
+)
 
 dir.create(
   dirname(caminho_saida),
