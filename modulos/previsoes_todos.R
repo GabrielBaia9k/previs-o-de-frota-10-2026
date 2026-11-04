@@ -1,14 +1,14 @@
 # ==============================================================================
-# previsoes_todos.R | COMPARACAO-SEIS-MODELOS-2
+# previsoes_todos.R | COMPARACAO-SETE-MODELOS-2
 #
-# Previsões: seis arquivos CSV em Previsoes_output/.
+# Previsões: sete arquivos CSV em Previsoes_output/.
 # Históricos e gradientes: permanecem em data/.
 # Este módulo não treina modelos nem altera arquivos de dados.
 # ==============================================================================
 
-previsoes_todos_versao <- "COMPARACAO-SEIS-MODELOS-2"
+previsoes_todos_versao <- "COMPARACAO-SETE-MODELOS-2"
 
-pt_modelos <- c("ARIMA", "ETS", "SARIMA", "SARIMAX", "LSTM", "GRU")
+pt_modelos <- c("ARIMA", "ETS", "SARIMA", "SARIMAX", "LSTM", "GRU", "XGBOOST")
 
 pt_cores <- c(
   ARIMA = "#0891B2",
@@ -16,7 +16,8 @@ pt_cores <- c(
   SARIMA = "#059669",
   SARIMAX = "#7C3AED",
   LSTM = "#1D44B8",
-  GRU = "#C0392B"
+  GRU = "#C0392B",
+  XGBOOST = "#DB2777"
 )
 
 # --- Leitura e normalização ----------------------------------------------------
@@ -378,14 +379,15 @@ pt_previsoes_vazias <- function() {
 
 pt_carregar_previsoes <- function(data_dir = here::here("Previsoes_output")) {
   especificacoes <- data.frame(
-    Modelo = c("LSTM", "GRU", "ARIMA", "ETS", "SARIMA", "SARIMAX"),
+    Modelo = c("LSTM", "GRU", "ARIMA", "ETS", "SARIMA", "SARIMAX", "XGBOOST"),
     Arquivo = c(
       "previsoes_lstm_pre_comp.csv",
       "previsoes_gru_global_pre_comp.csv",
       "previsoes_arima_pre_comp.csv",
       "previsoes_ets_pre_comp.csv",
       "previsoes_sarima_pre_comp.csv",
-      "previsoes_sarimax_pre_comp.csv"
+      "previsoes_sarimax_pre_comp.csv",
+      "previsoes_xgboost_pre_comp.csv"
     ),
     stringsAsFactors = FALSE
   )
@@ -522,7 +524,7 @@ pt_tabela_previsoes <- function(dados) {
     dplyr::rename("Frota Real" = Real)
 }
 
-# --- Comparação dos seis modelos ---------------------------------------------
+# --- Comparação dos sete modelos ---------------------------------------------
 
 pt_filtrar_previsoes_localidade <- function(dados, localidade) {
   if (!length(localidade)) {
@@ -563,7 +565,7 @@ pt_reais_projecao <- function(dados_completos, localidade) {
     dplyr::mutate(
       Prioridade = match(
         Modelo,
-        c("GRU", "LSTM", "SARIMAX", "SARIMA", "ETS", "ARIMA")
+        c("GRU", "LSTM", "SARIMAX", "SARIMA", "ETS", "ARIMA", "XGBOOST")
       )
     ) |>
     dplyr::arrange(Prioridade)
@@ -700,6 +702,9 @@ pt_desenhar_projecoes <- function(
     dados_completos,
     localidade
 ) {
+  opcoes_anteriores <- options(OutDec = ".")
+  on.exit(options(opcoes_anteriores), add = TRUE)
+
   reais <- pt_reais_projecao(
     dados_completos, localidade
   )
@@ -708,6 +713,7 @@ pt_desenhar_projecoes <- function(
     reais$Data,
     projecoes$Data
   )))
+  datas <- datas[!is.na(datas)]
 
   valores <- c(reais$Real, projecoes$Previsao)
   valores <- valores[is.finite(valores)]
@@ -725,158 +731,119 @@ pt_desenhar_projecoes <- function(
     janela <- janela + c(-15, 15)
   }
 
-  limite_y <- range(c(0, valores))
-  margem <- diff(limite_y) * 0.08
-
-  if (margem == 0) margem <- 1
-
-  limite_y <- limite_y + c(
-    if (limite_y[1] < 0) -margem else 0,
-    margem
-  )
-
-  parametros <- graphics::par(
-    mar = c(6.0, 6.5, 5.2, 1.2),
-    las = 1
-  )
-  on.exit(graphics::par(parametros), add = TRUE)
-
-  graphics::plot(
-    datas,
-    rep(NA_real_, length(datas)),
-    type = "n",
-    xlab = "Data",
-    ylab = "",
-    ylim = limite_y,
-    xlim = as.numeric(janela),
-    xaxt = "n",
-    bty = "l"
-  )
-
-  graphics::mtext(
-    "Quantidade de veículos",
-    side = 2,
-    line = 4.6,
-    las = 0
-  )
-
-  graphics::axis.Date(
-    1,
-    at = pretty(datas, n = 10),
-    format = "%b/%Y"
-  )
-
-  graphics::grid(
-    nx = NA,
-    ny = NULL,
-    col = "#e5e7eb",
-    lty = 1
-  )
-
-  graphics::mtext(
-    "Comparação das previsões por algoritmo",
-    side = 3,
-    line = 3.4,
-    font = 2,
-    cex = 1.1
-  )
-
-  graphics::mtext(
-    paste(
-      "Localidade:", localidade,
-      "| Janela:",
-      format(min(datas), "%m/%Y"),
-      "a",
-      format(max(datas), "%m/%Y")
-    ),
-    side = 3,
-    line = 2.2,
-    cex = 0.85
-  )
-
-  if (nrow(reais)) {
-    graphics::lines(
-      reais$Data,
-      reais$Real,
-      col = "#333333",
-      lwd = 2
-    )
-
-    graphics::points(
-      reais$Data,
-      reais$Real,
-      col = "#333333",
-      pch = 16,
-      cex = 0.4
-    )
-  }
-
   presentes <- pt_modelos[
     pt_modelos %in% unique(projecoes$Modelo)
   ]
 
+  # Regularizar apenas a visualizacao: lacunas continuam NA, sem interpolacao.
+  datas <- sort(unique(c(datas, seq(min(datas), max(datas), by = "month"))))
+  # Timestamp em UTC evita deslocar o primeiro dia do mes no navegador.
+  dados_grafico <- data.frame(Data = as.numeric(datas) * 86400000)
+  if (nrow(reais)) {
+    dados_grafico$Real <- reais$Real[match(datas, reais$Data)]
+  }
   for (modelo in presentes) {
-    parte <- projecoes[
-      projecoes$Modelo == modelo,
-      ,
-      drop = FALSE
-    ]
-
-    parte <- parte[order(parte$Data), , drop = FALSE]
-
-    graphics::lines(
-      parte$Data,
-      parte$Previsao,
-      col = pt_cores[[modelo]],
-      lwd = 2
-    )
-
-    graphics::points(
-      parte$Data,
-      parte$Previsao,
-      col = pt_cores[[modelo]],
-      pch = 16,
-      cex = 0.4
-    )
+    parte <- projecoes[projecoes$Modelo == modelo, , drop = FALSE]
+    dados_grafico[[modelo]] <- parte$Previsao[match(datas, parte$Data)]
   }
 
-  if (nrow(reais)) {
-    graphics::abline(
-      v = as.numeric(max(reais$Data)),
-      lty = 3,
-      col = "#6B7280"
-    )
-  }
-
-  graphics::legend(
-    "topleft",
-    legend = c(
-      if (nrow(reais)) "Real (referência)",
-      presentes
-    ),
-    col = c(
-      if (nrow(reais)) "#333333",
-      unname(pt_cores[presentes])
-    ),
-    lty = 1,
-    lwd = 2,
-    pch = 16,
-    bty = "n",
-    cex = 0.8,
-    ncol = 2
+  grafico <- echarts4r::e_charts(
+    dados_grafico, Data, useUTC = TRUE,
+    animationDuration = 300, animationDurationUpdate = 150
   )
-
   if (nrow(reais)) {
-    graphics::mtext(
-      "Linha tracejada: último mês com valor real disponível",
-      side = 1,
-      line = 4.5,
-      cex = 0.75,
-      col = "#4B5563"
+    grafico <- echarts4r::e_line_(
+      grafico, "Real", name = "Real (referência)",
+      smooth = FALSE, connectNulls = FALSE, showSymbol = FALSE,
+      lineStyle = list(color = "#333333", width = 2),
+      itemStyle = list(color = "#333333")
+    )
+  }
+  for (modelo in presentes) {
+    grafico <- echarts4r::e_line_(
+      grafico, modelo, name = modelo,
+      smooth = FALSE, connectNulls = FALSE, showSymbol = FALSE,
+      lineStyle = list(color = pt_cores[[modelo]], width = 2),
+      itemStyle = list(color = pt_cores[[modelo]])
     )
   }
 
-  invisible(NULL)
+  rotulos <- c(if (nrow(reais)) "Real (referência)", presentes)
+  grafico <- grafico |>
+    echarts4r::e_title(
+      text = paste("Localidade:", localidade),
+      subtext = paste(
+        "Janela:", format(min(datas), "%m/%Y"), "a", format(max(datas), "%m/%Y")
+      ),
+      left = "center", top = 5, textStyle = list(fontSize = 14)
+    ) |>
+    echarts4r::e_grid(top = 78, bottom = 90, left = 85, right = 25, containLabel = TRUE) |>
+    echarts4r::e_legend(
+      type = "scroll", orient = "horizontal", bottom = 0, left = 10, right = 10,
+      selectedMode = "multiple",
+      selected = as.list(stats::setNames(rep(TRUE, length(rotulos)), rotulos)),
+      inactiveColor = "#b8b8b8", textStyle = list(fontSize = 12)
+    ) |>
+    echarts4r::e_x_axis(
+      type = "time", min = as.numeric(janela[1]) * 86400000,
+      max = as.numeric(janela[2]) * 86400000,
+      name = "Data", nameLocation = "middle", nameGap = 30,
+      axisLabel = list(formatter = htmlwidgets::JS(
+        "function(value) {
+          var d = new Date(value);
+          return String(d.getUTCMonth() + 1).padStart(2, '0') + '/' + d.getUTCFullYear();
+        }"
+      ))
+    ) |>
+    echarts4r::e_y_axis(
+      name = "Quantidade de veículos", nameLocation = "middle", nameGap = 65,
+      min = htmlwidgets::JS(
+        "function(value) { return isFinite(value.min) ? Math.min(0, value.min) : 0; }"
+      ),
+      axisLabel = list(formatter = htmlwidgets::JS(
+        "function(value) { return value.toLocaleString('pt-BR', {maximumFractionDigits: 0}); }"
+      )),
+      splitLine = list(show = TRUE, lineStyle = list(color = "#e5e7eb"))
+    ) |>
+    echarts4r::e_tooltip(
+      trigger = "axis", axisPointer = list(type = "line"),
+      formatter = htmlwidgets::JS(
+        "function(params) {
+          if (!params || !params.length) return '';
+          var stamp = Array.isArray(params[0].value) ? params[0].value[0] : params[0].axisValue;
+          var date = new Date(stamp).toLocaleDateString('pt-BR', {
+            month: '2-digit', year: 'numeric', timeZone: 'UTC'
+          });
+          var result = '<b>' + date + '</b><br/>';
+          params.forEach(function(item) {
+            var value = Array.isArray(item.value) ? item.value[1] : item.value;
+            if (value !== null && value !== undefined && value !== '' && isFinite(Number(value))) {
+              result += item.marker + item.seriesName + ': <b>' +
+                Number(value).toLocaleString('pt-BR', {maximumFractionDigits: 2}) +
+                ' veículos</b><br/>';
+            }
+          });
+          return result;
+        }"
+      )
+    )
+
+  # Anotacao independente da legenda: nao e um modelo e nao altera a escala Y.
+  if (nrow(reais)) {
+    grafico$x$opts$series <- append(grafico$x$opts$series, list(list(
+      id = "pt_ultimo_real", name = "Último mês observado", type = "line",
+      data = list(), silent = TRUE, showSymbol = FALSE,
+      tooltip = list(show = FALSE),
+      markLine = list(
+        silent = TRUE, symbol = c("none", "none"),
+        label = list(formatter = "Último Real", position = "insideEndTop"),
+        lineStyle = list(color = "#6B7280", type = "dotted", width = 1),
+        data = list(list(xAxis = as.numeric(max(reais$Data)) * 86400000))
+      )
+    )))
+  }
+
+  grafico
 }
 
 # --- Comparação das perdas: somente LSTM e GRU -------------------------------
@@ -1331,18 +1298,25 @@ previsoes_todos_ui <- function(id) {
         maximizable = TRUE,
 
         shiny::tags$p(
-          "Comparação de ARIMA, ETS, SARIMA, SARIMAX, LSTM e GRU. ",
+          "Comparação de ARIMA, ETS, SARIMA, SARIMAX, LSTM, GRU e XGBoost. ",
           "A linha real é mostrada apenas nos períodos em que há observação; ",
-          "para ela, usa-se preferencialmente o valor real do CSV da GRU. ",
+          "para ela, usa-se preferencialmente o valor real do CSV da GRU, ",
+          "com complemento dos demais modelos, incluindo o XGBoost. ",
           "As datas e os valores apresentados são os registrados nos arquivos ",
           "CSV de previsão de cada modelo."
         ),
 
         shiny::uiOutput(ns("status_projecoes")),
 
-        shiny::plotOutput(
+        echarts4r::echarts4rOutput(
           ns("grafico_projecoes"),
+          width = "100%",
           height = "520px"
+        ),
+
+        shiny::tags$p(
+          "Clique nos nomes da legenda para ocultar ou mostrar as curvas. ",
+          "A seleção da legenda afeta somente este gráfico."
         ),
 
         shiny::tags$p(
@@ -1646,7 +1620,7 @@ previsoes_todos_server <- function(
       )
     })
 
-    output$grafico_projecoes <- shiny::renderPlot({
+    output$grafico_projecoes <- echarts4r::renderEcharts4r({
       dados <- projecoes_comparacao()
 
       pt_desenhar_projecoes(
@@ -1654,7 +1628,7 @@ previsoes_todos_server <- function(
         dados_completos = dados$completos,
         localidade = input$select_local
       )
-    }, res = 96, execOnResize = TRUE)
+    })
 
     output$tabela_erros_projecoes <- DT::renderDataTable({
       shiny::req(input$periodo_metricas)
