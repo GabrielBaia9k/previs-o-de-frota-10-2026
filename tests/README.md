@@ -83,6 +83,16 @@ Parquet do SARIMAX. Este teste exige a versao migrada para
 Ele falhara ate que essa migracao tambem seja incorporada ao repositorio.
 O teste do frontend pode ser executado separadamente enquanto isso.
 
+### test_xgboost_outdec.R
+
+Execute `Rscript --vanilla tests/test_xgboost_outdec.R` na raiz, ou
+`source("tests/test_xgboost_outdec.R", encoding = "UTF-8")` no console R.
+Requer o pacote `xgboost` instalado localmente. Usa dados sinteticos e treinos
+curtos para comparar 84 previsoes recursivas com ponto e virgula decimal e
+verificar a restauracao de `OutDec`, inclusive quando o treinamento falha.
+Nao regenera os CSVs do projeto. Sucesso termina com
+`TESTES_XGBOOST_OUTDEC_CONCLUIDOS`.
+
 ## Uso continuo
 
 Rode os testes apos alterar leitores, filtros, metricas, exportacoes ou a entrada
