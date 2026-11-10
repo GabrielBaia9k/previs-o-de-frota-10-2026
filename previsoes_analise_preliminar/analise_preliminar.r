@@ -1,33 +1,30 @@
-# ACF/PACF dos registros mensais de veiculos -- esquema AP-ACF-PACF-1.
-# Executar na raiz do projeto:
 # source("previsoes_analise_preliminar/analise_preliminar.r", encoding = "UTF-8")
-# Ou, dentro desta pasta: Rscript --vanilla analise_preliminar.r
+# ACF/PACF dos registros mensais de veiculos -- AP-ACF-PACF-GRAFICO-2.
+# Executar no console R, com a raiz do projeto como diretorio de trabalho:
+# source("previsoes_analise_preliminar/analise_preliminar.r", encoding = "UTF-8")
+# Ou, dentro desta pasta: source("analise_preliminar.r", encoding = "UTF-8")
 # Dependencias: somente os pacotes distribuidos com o R, sem instalacoes.
 #
 # ENTRADA: data/veiculos_por_mes_municipio.csv.
-# UNICA SAIDA: previsoes_analise_preliminar/analise_preliminar_output.csv.
-# Nao gera graficos, modelos, previsoes, relatorios auxiliares ou arquivos de erros.
-# Reexecutar substitui o CSV, sem acumular linhas de execucoes anteriores.
+# SAIDA: um painel 2x2 no dispositivo grafico da sessao R (Plots/janela grafica).
+# Nao exporta CSV, PNG ou PDF, nao usa Shiny e nao ajusta modelos de previsao.
+# Usar source() em sessao interativa, em vez de Rscript: nao criar Rplots.pdf.
+# O CSV produzido pela versao anterior nao e lido, alterado ou regenerado.
 #
-# CONTRATO PARA A FUTURA ABA DO SHINY
-# Uma linha por Localidade + Representacao + Lag, com ACF e PACF lado a lado.
-# Representacao: nivel ou diferenca_1. Lag esta em meses e inicia em 1 (nao ha lag0).
-# N: numero de observacoes da representacao no bloco, diferente de Meses_bloco.
-# Inicio/Fim_bloco: bloco original escolhido; Inicio/Fim_amostra: datas efetivas
-# da representacao (a primeira diferenca inicia no segundo mes do bloco).
-# Status: ok, bloco_insuficiente, serie_constante ou erro_calculo.
-# Falhas geram uma linha por representacao, com Lag/coeficientes/faixas NA.
-# Cobertura_min/max: municipios com total conhecido por mes no periodo analisado;
-# para um municipio esses numeros sao 0/1; no estado, comparam-se a Municipios_esperados.
-# Limite_inferior/superior: referencias pontuais aproximadas +/-1.96/sqrt(N)
-# sob ruido branco; NA em linhas sem calculo. Nao sao intervalos de previsao,
-# testes conjuntos nem evidencia de qual modelo ou lag e melhor.
-# Versao_esquema e MD5_entrada permitem identificar contrato e versao da base.
-# Valores numericos usam ponto decimal; texto em UTF-8; campos ausentes ficam vazios.
+# LEITURA DO PAINEL
+# Primeira linha: ACF e PACF do nivel; segunda: ACF e PACF da primeira diferenca.
+# Lags em meses a partir de 1; N e datas efetivas aparecem em cada painel.
+# Referencias pontuais aproximadas +/-1.96/sqrt(N) sob ruido branco.
+# Nao sao intervalos de previsao, testes conjuntos ou selecao automatica de lags.
+# Blocos insuficientes e series constantes aparecem como avisos no painel.
+# Para outro municipio, editar localidade abaixo com o nome presente em LOCAL.
+# Ou, apos source():
+# config_analise_preliminar$localidade <- "BELEM"
+# executar_analise_preliminar()
 
 config_analise_preliminar <- list(
   entrada = "data/veiculos_por_mes_municipio.csv",
-  saida = "previsoes_analise_preliminar/analise_preliminar_output.csv",
+  localidade = "PARÁ (Geral)",
   inicio = as.Date("2016-01-01"), fim = as.Date("2024-12-01"),
   lag_max = 24L, minimo_bloco = 24L
 )
@@ -47,16 +44,12 @@ ap_raiz_projeto <- function(entrada) {
 ap_ler_base <- function(arquivo) {
   x <- utils::read.csv(arquivo, colClasses = "character", check.names = FALSE,
     fileEncoding = "UTF-8-BOM", na.strings = c("", "NA", "NaN", "NULL"))
-
   obrigatorias <- c("LOCAL", "ANO", "MES", "TIPO_VEICULO", "QTD_VEICULO")
-
   if (!all(obrigatorias %in% names(x))) stop("Colunas obrigatorias ausentes na entrada.")
-
   for (nome in c("LOCAL", "TIPO_VEICULO")) {
     x[[nome]] <- trimws(x[[nome]])
     if (anyNA(x[[nome]]) || any(!nzchar(x[[nome]]))) stop("Identificador ausente: ", nome)
   }
-
   for (nome in c("ANO", "MES", "QTD_VEICULO")) {
     texto <- trimws(x[[nome]])
     ausente <- is.na(texto) | toupper(texto) %in% c("", "NA", "NAN", "NULL")
@@ -65,11 +58,9 @@ ap_ler_base <- function(arquivo) {
     if (any(!ausente & !is.finite(valor))) stop("Numero invalido na coluna ", nome)
     x[[nome]] <- valor
   }
-
   if (anyNA(x$ANO) || anyNA(x$MES) || any(x$ANO != floor(x$ANO)) ||
       any(x$ANO < 1 | x$ANO > 9999) || any(x$MES != floor(x$MES)) ||
       any(x$MES < 1 | x$MES > 12)) stop("Ano ou mes invalido.")
-      
   if (any(x$QTD_VEICULO < 0 | x$QTD_VEICULO != floor(x$QTD_VEICULO), na.rm = TRUE)) {
     stop("Quantidade negativa ou nao inteira.")
   }
@@ -91,32 +82,22 @@ ap_ler_base <- function(arquivo) {
 ap_series_mensais <- function(base, config) {
   municipios <- sort(unique(base$LOCAL)) # apenas identificadores do arquivo integral
   x <- base[base$Data >= config$inicio & base$Data <= config$fim, ]
-  if (!nrow(x)) 
-    stop("Sem registros no periodo configurado.")
-
+  if (!nrow(x)) stop("Sem registros no periodo configurado.")
   mensal <- stats::aggregate(x$QTD_VEICULO, x[c("LOCAL", "Data")],
     function(v) if (anyNA(v)) NA_real_ else sum(v))
-
   names(mensal)[3L] <- "Registros"
-
   datas <- seq(config$inicio, config$fim, by = "month")
-
-  valores <- matrix(NA_real_, length(datas), length(municipios), dimnames = list(as.character(datas), municipios))
-
+  valores <- matrix(NA_real_, length(datas), length(municipios),
+    dimnames = list(as.character(datas), municipios))
   presente <- matrix(FALSE, nrow(valores), ncol(valores))
-
   indices <- cbind(match(mensal$Data, datas), match(mensal$LOCAL, municipios))
-
   valores[indices] <- mensal$Registros; presente[indices] <- TRUE
-
   estado <- vapply(seq_along(datas), function(i) {
     v <- valores[i, presente[i, ]]
     if (!length(v) || anyNA(v)) NA_real_ else sum(v)
   }, numeric(1))
-
   series <- c(list(estado), lapply(seq_along(municipios), function(j) valores[, j]))
   names(series) <- c("PARÁ (Geral)", municipios)
-
   cobertura <- c(list(rowSums(is.finite(valores))),
     lapply(seq_along(municipios), function(j) as.integer(is.finite(valores[, j]))))
   names(cobertura) <- names(series)
@@ -138,27 +119,21 @@ ap_maior_bloco <- function(y) {
 # ACF/PACF sao estatisticas descritivas, sem ajuste de modelo de previsao.
 # O limite de lags e o mesmo nas duas representacoes. Blocos curtos podem nao
 # alcancar o lag12; o tamanho minimo e operacional, nao garantia de confiabilidade.
-ap_analisar_localidade <- function(nome, y, datas, cobertura, esperados, config, md5) {
-
+ap_analisar_localidade <- function(nome, y, datas, cobertura, esperados, config) {
   tipo <- if (identical(nome, "PARÁ (Geral)")) "estado" else "municipio"
   bloco <- ap_maior_bloco(y)
   n_bloco <- length(bloco)
   lag_max <- if (n_bloco >= config$minimo_bloco) min(config$lag_max, floor((n_bloco - 1L) / 4L)) else NA_integer_
-  ultimo_bloco <- if (is.finite(tail(y, 1L))) tail(rle(is.finite(y))$lengths, 1L) else 0L
   aviso <- character()
-
-  if (anyNA(y)) 
-     aviso <- c(aviso, "serie_com_lacunas")
-
-  if (tipo == "estado" && any(cobertura < esperados)) 
-    aviso <- c(aviso, "soma_estadual_observada_com_cobertura_parcial")
-
-  if (n_bloco && tail(bloco, 1L) < length(y)) 
-    aviso <- c(aviso, "bloco_nao_termina_no_fim_da_analise")
-
-  if (is.finite(lag_max) && lag_max < 12L) 
-    aviso <- c(aviso, "diagnostico_nao_alcanca_lag_12")
-
+  if (anyNA(y)) aviso <- c(aviso, "Serie com lacunas: usado o maior bloco continuo conhecido.")
+  if (tipo == "estado" && any(cobertura < esperados)) {
+    aviso <- c(aviso, paste0("Soma estadual observada: cobertura parcial (",
+      min(cobertura), " a ", max(cobertura), "/", esperados, " municipios no periodo)."))
+  }
+  if (n_bloco && tail(bloco, 1L) < length(y)) {
+    aviso <- c(aviso, "O bloco selecionado termina antes do fim da analise.")
+  }
+  if (is.finite(lag_max) && lag_max < 12L) aviso <- c(aviso, "O diagnostico nao alcanca o lag 12.")
   valores <- list(nivel = y[bloco], diferenca_1 = diff(y[bloco]))
   saidas <- list()
   for (representacao in names(valores)) {
@@ -166,8 +141,10 @@ ap_analisar_localidade <- function(nome, y, datas, cobertura, esperados, config,
     status <- "ok"; detalhe <- character(); calculo <- NULL
     if (n_bloco < config$minimo_bloco) {
       status <- "bloco_insuficiente"
+      detalhe <- paste0("Bloco insuficiente: ", n_bloco, " meses.\nMinimo: ", config$minimo_bloco, " meses.")
     } else if (!is.finite(stats::var(v)) || stats::var(v) == 0) {
       status <- "serie_constante"
+      detalhe <- "Serie constante: correlacoes indefinidas."
     } else {
       calculo <- tryCatch({
         a <- as.numeric(stats::acf(v, lag.max = lag_max, plot = FALSE, na.action = na.fail)$acf)[-1L]
@@ -180,75 +157,90 @@ ap_analisar_localidade <- function(nome, y, datas, cobertura, esperados, config,
       if (is.null(calculo)) status <- "erro_calculo"
     }
     amostra <- if (representacao == "nivel") bloco else if (n_bloco > 1L) bloco[-1L] else integer()
-    linhas <- if (status == "ok") lag_max else 1L
-    limite <- if (status == "ok") 1.96 / sqrt(n) else NA_real_
-
-    saidas[[representacao]] <- data.frame(
-      Versao_esquema = "AP-ACF-PACF-1", Arquivo_entrada = config$entrada, MD5_entrada = md5,
-      Localidade = nome, Tipo_localidade = tipo,
-      Representacao = representacao, Inicio_analise = as.character(config$inicio), Fim_analise = as.character(config$fim),
-      Inicio_bloco = if (n_bloco) as.character(datas[head(bloco, 1L)]) else NA_character_,
-      Fim_bloco = if (n_bloco) as.character(datas[tail(bloco, 1L)]) else NA_character_,
-      Inicio_amostra = if (length(amostra)) as.character(datas[head(amostra, 1L)]) else NA_character_,
-      Fim_amostra = if (length(amostra)) as.character(datas[tail(amostra, 1L)]) else NA_character_,
-      Meses_calendario = length(y), Meses_conhecidos = sum(is.finite(y)), Meses_ausentes = sum(is.na(y)),
-      Meses_bloco = n_bloco, Meses_bloco_final = ultimo_bloco, N = n, Lag_max = lag_max,
-      Lag = if (status == "ok") seq_len(linhas) else NA_integer_,
-      ACF = if (status == "ok") calculo$acf else NA_real_,
-      PACF = if (status == "ok") calculo$pacf else NA_real_,
-      Limite_inferior = -limite, Limite_superior = limite,
-      Cobertura_min = min(cobertura), Cobertura_max = max(cobertura), Municipios_esperados = esperados,
-      Cobertura_completa = all(cobertura == esperados), Status = status,
-      Observacao = paste(c(aviso, detalhe), collapse = "; "), stringsAsFactors = FALSE
+    saidas[[representacao]] <- list(
+      status = status, mensagem = detalhe, n = n, datas = datas[amostra],
+      lags = if (status == "ok") seq_len(lag_max) else integer(),
+      acf = if (status == "ok") calculo$acf else numeric(),
+      pacf = if (status == "ok") calculo$pacf else numeric(),
+      limite = if (status == "ok") 1.96 / sqrt(n) else NA_real_
     )
   }
-  do.call(rbind, saidas)
+  list(localidade = nome, periodo = c(config$inicio, config$fim),
+    datas_bloco = datas[bloco], avisos = aviso, representacoes = saidas)
 }
 
-# 5. GERAR UM UNICO CSV COMPLETO ANTES DE SUBSTITUIR A SAIDA.
-# O temporario e apagado ao sair. file.copy(overwrite=TRUE) permite reexecucao
-# no Windows; em caso de bloqueio (p.ex. Excel aberto), informar erro no console.
-# Nao se promete substituicao atomica entre sistemas operacionais.
+# 5. EXIBIR O PAINEL DIRETAMENTE NO R, sem exportar arquivos.
+# Usar vetores e eixo manual para que as defasagens estejam em meses, nao anos.
+# Restaurar os parametros graficos, mantendo aberto o dispositivo do usuario.
+ap_plotar_diagnostico <- function(resultado) {
+  op <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(op), add = TRUE)
+  graphics::par(mfrow = c(2, 2), mar = c(4.2, 4.2, 3.4, 1.2),
+    oma = c(3.6, 0, 3.8, 0), cex.main = 0.95)
+  rotulos <- c(nivel = "Nivel", diferenca_1 = "Primeira diferenca")
+  for (representacao in names(resultado$representacoes)) {
+    r <- resultado$representacoes[[representacao]]
+    periodo <- if (length(r$datas)) {
+      paste(format(range(r$datas), "%m/%Y"), collapse = " a ")
+    } else "sem amostra conhecida"
+    for (medida in c("acf", "pacf")) {
+      titulo <- paste(toupper(medida), "-", rotulos[[representacao]])
+      if (r$status != "ok") {
+        graphics::plot.new()
+        graphics::title(main = titulo)
+        graphics::text(0.5, 0.5, paste(strwrap(r$mensagem, width = 38), collapse = "\n"), cex = 0.9)
+      } else {
+        cor <- if (medida == "acf") "#176B8E" else "#9C3D64"
+        graphics::plot(r$lags, r[[medida]], type = "h", lwd = 2, col = cor,
+          xlim = c(0.5, max(r$lags) + 0.5), ylim = c(-1, 1), xaxt = "n",
+          xlab = "Defasagem (meses)", ylab = toupper(medida), main = titulo)
+        marcas <- sort(unique(c(1L, r$lags[r$lags %% 6L == 0L], max(r$lags))))
+        graphics::axis(1, at = marcas)
+        graphics::abline(h = 0, col = "#555555")
+        graphics::abline(h = c(-r$limite, r$limite), col = "#666666", lty = 2)
+      }
+      graphics::mtext(paste0("N = ", r$n, " | ", periodo), side = 3, line = 0.25, cex = 0.7)
+    }
+  }
+  graphics::mtext(paste("ACF e PACF -", resultado$localidade), outer = TRUE,
+    side = 3, line = 2.1, font = 2, cex = 1.05)
+  graphics::mtext(paste("Janela de analise:", paste(format(resultado$periodo, "%m/%Y"), collapse = " a ")),
+    outer = TRUE, side = 3, line = 0.8, cex = 0.8)
+  graphics::mtext("Tracejado: referencia pontual +/-1,96/sqrt(N) sob ruido branco.",
+    outer = TRUE, side = 1, line = 0.9, cex = 0.7)
+  if (length(resultado$avisos)) {
+    graphics::mtext(resultado$avisos[1L], outer = TRUE, side = 1, line = 2.1, cex = 0.65)
+  }
+  invisible(resultado)
+}
 
+# 6. EXECUTAR APENAS A ANALISE DESCRITIVA DA LOCALIDADE CONFIGURADA.
 executar_analise_preliminar <- function(config = config_analise_preliminar) {
   op <- options(OutDec = "."); on.exit(options(op), add = TRUE)
+  if (!interactive()) {
+    stop("Execute com source() no console de uma sessao interativa do R para exibir o grafico, sem gravar arquivos.")
+  }
   if (length(config$inicio) != 1L || length(config$fim) != 1L ||
       anyNA(c(config$inicio, config$fim)) || config$inicio > config$fim ||
       any(format(c(config$inicio, config$fim), "%d") != "01")) stop("Periodo mensal invalido.")
-
   if (length(config$lag_max) != 1L || !is.finite(config$lag_max) || config$lag_max < 1L ||
       config$lag_max != floor(config$lag_max) || length(config$minimo_bloco) != 1L ||
       !is.finite(config$minimo_bloco) || config$minimo_bloco < 8L ||
       config$minimo_bloco != floor(config$minimo_bloco)) stop("Limites de lags/bloco invalidos.")
-
+  if (!is.character(config$localidade) || length(config$localidade) != 1L ||
+      is.na(config$localidade) || !nzchar(config$localidade)) stop("Configure uma unica localidade valida.")
   raiz <- ap_raiz_projeto(config$entrada)
-  arquivo <- file.path(raiz, config$entrada); saida <- file.path(raiz, config$saida)
-  if (identical(normalizePath(arquivo, mustWork = TRUE), normalizePath(saida, mustWork = FALSE))) {
-    stop("Entrada e saida devem ser arquivos distintos.")
+  base <- ap_ler_base(file.path(raiz, config$entrada)); obj <- ap_series_mensais(base, config)
+  i <- match(config$localidade, names(obj$series))
+  if (is.na(i)) {
+    stop("Localidade nao encontrada: ", config$localidade,
+      ". Use o nome presente em LOCAL ou PARÁ (Geral).")
   }
-
-  base <- ap_ler_base(arquivo); obj <- ap_series_mensais(base, config)
-
-  md5 <- unname(tools::md5sum(arquivo))
-
-  resultado <- do.call(rbind, lapply(seq_along(obj$series), function(i) {
-    ap_analisar_localidade(names(obj$series)[i], obj$series[[i]], obj$datas, obj$cobertura[[i]],
-      if (i == 1L) obj$n_municipios else 1L, config, md5)
-  }))
-
-  rownames(resultado) <- NULL
-  dir.create(dirname(saida), recursive = TRUE, showWarnings = FALSE)
-  temporario <- tempfile("analise_preliminar_", tmpdir = dirname(saida), fileext = ".tmp")
-  on.exit(unlink(temporario), add = TRUE)
-  utils::write.csv(resultado, temporario, row.names = FALSE, na = "", fileEncoding = "UTF-8")
-
-  if (!file.copy(temporario, saida, overwrite = TRUE)) {
-    stop("Nao foi possivel substituir o CSV. Feche o arquivo em outros programas e tente novamente.")
-  }
-
-  message("ANALISE_PRELIMINAR_CONCLUIDA: ", normalizePath(saida, winslash = "/"),
-    " (", nrow(resultado), " linhas; ", length(unique(resultado$Localidade)), " localidades)")
-
+  resultado <- ap_analisar_localidade(names(obj$series)[i], obj$series[[i]], obj$datas, obj$cobertura[[i]],
+    if (i == 1L) obj$n_municipios else 1L, config)
+  if (length(resultado$avisos)) message(paste(resultado$avisos, collapse = "\n"))
+  ap_plotar_diagnostico(resultado)
+  message("ANALISE_PRELIMINAR_CONCLUIDA: grafico exibido para ", resultado$localidade)
   invisible(resultado)
 }
 

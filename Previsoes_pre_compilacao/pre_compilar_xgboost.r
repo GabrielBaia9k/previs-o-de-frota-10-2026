@@ -1,3 +1,4 @@
+# source("Previsoes_pre_compilacao/pre_compilar_xgboost.r", encoding = "UTF-8")
 # XGBoost CRAN: modelos independentes por municipio e para PARA (Geral).
 # Revisao: XGB-CRAN-LOCAL-ESTADO-4-DIF1; somente CSV mensal, erros no Shiny.
 # Execucao EXCLUSIVAMENTE na maquina local Windows/VS Code, R 4.5.3.
@@ -33,9 +34,9 @@ config_xgboost_local <- list(
   entrada = "data/veiculos_por_mes_municipio.csv",
   saida = "Previsoes_output/previsoes_xgboost_pre_comp.csv",
   ano_inicio = 2016L, ano_teste = 2025L, ano_fim = 2025L,
-  n_teste = 12L, passos_futuro = 72L, lags = c(1,12),
+  n_teste = 12L, passos_futuro = 72L, lags = c(1,2,12),
   diferenciacao = 1L, minimo_treino = 24L,
-  nrounds = 100L,
+  nrounds = 300L,
   parametros = list(
     objective = "reg:squarederror", tree_method = "hist",
     max_depth = 3L, eta = 0.05, min_child_weight = 3,
