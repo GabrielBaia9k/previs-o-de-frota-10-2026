@@ -61,10 +61,7 @@ previsoes_ui <- function(id) {
             selectInput(
               inputId = ns("filtro_modelo"),
               label = "MODELO DE PREVISÃO",
-              choices = c(
-                "SARIMAX", "SARIMA", "ARIMA",
-                "ETS", "LSTM", "GRU"
-              ),
+              choices = pt_modelos,
               selected = "SARIMAX",
               width = "100%"
             )

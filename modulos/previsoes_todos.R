@@ -1,14 +1,14 @@
 # ==============================================================================
-# previsoes_todos.R | COMPARACAO-SETE-MODELOS-2
+# previsoes_todos.R | COMPARACAO-NOVE-MODELOS-5-PERDAS-TCN
 #
-# Previsões: sete arquivos CSV em Previsoes_output/.
+# Previsões: nove arquivos CSV em Previsoes_output/.
 # Históricos e gradientes: permanecem em data/.
 # Este módulo não treina modelos nem altera arquivos de dados.
 # ==============================================================================
 
-previsoes_todos_versao <- "COMPARACAO-SETE-MODELOS-2"
+previsoes_todos_versao <- "COMPARACAO-NOVE-MODELOS-5-PERDAS-TCN"
 
-pt_modelos <- c("ARIMA", "ETS", "SARIMA", "SARIMAX", "LSTM", "GRU", "XGBOOST")
+pt_modelos <- c("ARIMA", "ETS", "SARIMA", "SARIMAX", "LSTM", "GRU", "XGBOOST", "PROPHET", "TCN")
 
 pt_cores <- c(
   ARIMA = "#0891B2",
@@ -17,7 +17,9 @@ pt_cores <- c(
   SARIMAX = "#7C3AED",
   LSTM = "#1D44B8",
   GRU = "#C0392B",
-  XGBOOST = "#DB2777"
+  XGBOOST = "#DB2777",
+  PROPHET = "#8B5A2B",
+  TCN = "#4D7C0F"
 )
 
 # --- Leitura e normalização ----------------------------------------------------
@@ -379,7 +381,7 @@ pt_previsoes_vazias <- function() {
 
 pt_carregar_previsoes <- function(data_dir = here::here("Previsoes_output")) {
   especificacoes <- data.frame(
-    Modelo = c("LSTM", "GRU", "ARIMA", "ETS", "SARIMA", "SARIMAX", "XGBOOST"),
+    Modelo = c("LSTM", "GRU", "ARIMA", "ETS", "SARIMA", "SARIMAX", "XGBOOST", "PROPHET", "TCN"),
     Arquivo = c(
       "previsoes_lstm_pre_comp.csv",
       "previsoes_gru_global_pre_comp.csv",
@@ -387,7 +389,9 @@ pt_carregar_previsoes <- function(data_dir = here::here("Previsoes_output")) {
       "previsoes_ets_pre_comp.csv",
       "previsoes_sarima_pre_comp.csv",
       "previsoes_sarimax_pre_comp.csv",
-      "previsoes_xgboost_pre_comp.csv"
+      "previsoes_xgboost_pre_comp.csv",
+      "previsoes_prophet_pre_comp.csv",
+      "previsoes_tcn_pre_comp.csv"
     ),
     stringsAsFactors = FALSE
   )
@@ -524,7 +528,7 @@ pt_tabela_previsoes <- function(dados) {
     dplyr::rename("Frota Real" = Real)
 }
 
-# --- Comparação dos sete modelos ---------------------------------------------
+# --- Comparação dos nove modelos ---------------------------------------------
 
 pt_filtrar_previsoes_localidade <- function(dados, localidade) {
   if (!length(localidade)) {
@@ -565,7 +569,7 @@ pt_reais_projecao <- function(dados_completos, localidade) {
     dplyr::mutate(
       Prioridade = match(
         Modelo,
-        c("GRU", "LSTM", "SARIMAX", "SARIMA", "ETS", "ARIMA", "XGBOOST")
+        c("GRU", "LSTM", "SARIMAX", "SARIMA", "ETS", "ARIMA", "XGBOOST", "PROPHET", "TCN")
       )
     ) |>
     dplyr::arrange(Prioridade)
@@ -858,7 +862,8 @@ pt_historico_disponivel <- function(historico) {
 pt_dados_perdas_comparacao <- function(
     historico_lstm,
     historico_gru,
-    localidade
+    localidade,
+    historico_tcn = NULL
 ) {
   partes <- list()
 
@@ -905,6 +910,25 @@ pt_dados_perdas_comparacao <- function(
         Epoca = gru$Epoca,
         Serie = "GRU_Validacao",
         Valor = gru$Val_Loss,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  if (pt_historico_disponivel(historico_tcn)) {
+    tcn <- historico_tcn$dados[
+      historico_tcn$dados$Localidade %in% localidade,
+      ,
+      drop = FALSE
+    ]
+
+    if (nrow(tcn) > 0L) {
+      partes[[length(partes) + 1L]] <- data.frame(
+        Epoca = tcn$Epoca, Serie = "TCN_Treino", Valor = tcn$Loss,
+        stringsAsFactors = FALSE
+      )
+      partes[[length(partes) + 1L]] <- data.frame(
+        Epoca = tcn$Epoca, Serie = "TCN_Validacao", Valor = tcn$Val_Loss,
         stringsAsFactors = FALSE
       )
     }
@@ -995,8 +1019,12 @@ pt_desenhar_perdas <- function(dados, localidade) {
 
   escopos <- character()
 
-  if (any(grepl("^LSTM_", dados$Serie))) {
-    escopos <- c(escopos, paste("LSTM:", localidade))
+  redes_locais <- c(
+    if (any(grepl("^LSTM_", dados$Serie))) "LSTM",
+    if (any(grepl("^TCN_", dados$Serie))) "TCN"
+  )
+  if (length(redes_locais)) {
+    escopos <- c(escopos, paste0(paste(redes_locais, collapse = "/"), ": ", localidade))
   }
 
   if (any(grepl("^GRU_", dados$Serie))) {
@@ -1014,35 +1042,45 @@ pt_desenhar_perdas <- function(dados, localidade) {
     "LSTM_Treino",
     "LSTM_Validacao",
     "GRU_Treino",
-    "GRU_Validacao"
+    "GRU_Validacao",
+    "TCN_Treino",
+    "TCN_Validacao"
   )
 
   rotulos <- c(
     LSTM_Treino = "LSTM - treino",
     LSTM_Validacao = "LSTM - validação",
     GRU_Treino = "GRU - treino",
-    GRU_Validacao = "GRU - validação"
+    GRU_Validacao = "GRU - validação",
+    TCN_Treino = "TCN - treino",
+    TCN_Validacao = "TCN - validação"
   )
 
   cores <- c(
     LSTM_Treino = "#1D44B8",
     LSTM_Validacao = "#1D44B8",
     GRU_Treino = "#C0392B",
-    GRU_Validacao = "#C0392B"
+    GRU_Validacao = "#C0392B",
+    TCN_Treino = "#4D7C0F",
+    TCN_Validacao = "#4D7C0F"
   )
 
   tipos <- c(
     LSTM_Treino = 1,
     LSTM_Validacao = 2,
     GRU_Treino = 1,
-    GRU_Validacao = 2
+    GRU_Validacao = 2,
+    TCN_Treino = 1,
+    TCN_Validacao = 2
   )
 
   pontos <- c(
     LSTM_Treino = 16,
     LSTM_Validacao = 1,
     GRU_Treino = 17,
-    GRU_Validacao = 2
+    GRU_Validacao = 2,
+    TCN_Treino = 15,
+    TCN_Validacao = 0
   )
 
   for (serie in series) {
@@ -1103,7 +1141,7 @@ pt_desenhar_perdas <- function(dados, localidade) {
     xjust = 0.5,
     yjust = 0,
     xpd = NA,
-    ncol = 2,
+    ncol = if (length(presentes) > 4L) 3L else 2L,
     legend = unname(rotulos[presentes]),
     col = unname(cores[presentes]),
     lty = unname(tipos[presentes]),
@@ -1258,7 +1296,7 @@ previsoes_todos_ui <- function(id) {
   shiny::fluidPage(
     shiny::fluidRow(
       bs4Dash::box(
-        title = "Resultados dos modelos e treinamento LSTM × GRU",
+        title = "Resultados dos modelos e treinamento LSTM × GRU × TCN",
         width = 12,
         status = "primary",
         solidHeader = FALSE,
@@ -1298,10 +1336,10 @@ previsoes_todos_ui <- function(id) {
         maximizable = TRUE,
 
         shiny::tags$p(
-          "Comparação de ARIMA, ETS, SARIMA, SARIMAX, LSTM, GRU e XGBoost. ",
+          "Comparação de ARIMA, ETS, SARIMA, SARIMAX, LSTM, GRU, XGBoost, Prophet e TCN. ",
           "A linha real é mostrada apenas nos períodos em que há observação; ",
           "para ela, usa-se preferencialmente o valor real do CSV da GRU, ",
-          "com complemento dos demais modelos, incluindo o XGBoost. ",
+          "com complemento dos demais modelos, incluindo XGBoost, Prophet e TCN. ",
           "As datas e os valores apresentados são os registrados nos arquivos ",
           "CSV de previsão de cada modelo."
         ),
@@ -1348,7 +1386,7 @@ previsoes_todos_ui <- function(id) {
 
     shiny::fluidRow(
       bs4Dash::box(
-        title = "Perdas de treinamento e validação — LSTM × GRU",
+        title = "Perdas de treinamento e validação — LSTM × GRU × TCN",
         width = 12,
         status = "primary",
         solidHeader = FALSE,
@@ -1357,9 +1395,9 @@ previsoes_todos_ui <- function(id) {
         shiny::tags$p(
           "Valores registrados pelo Keras durante fit(): Loss no treino e ",
           "Val_Loss na validação interna, por época. A função de perda é MSE ",
-          "no alvo normalizado de cada rede. O LSTM corresponde à localidade selecionada; ",
+          "no alvo normalizado de cada rede. LSTM e TCN correspondem à localidade selecionada; ",
           "a GRU corresponde ao modelo global. Os históricos são lidos de ",
-          "historico_perdas_lstm.csv e historico_perdas_gru.csv, na pasta data. ",
+          "historico_perdas_lstm.csv, historico_perdas_gru.csv e historico_perdas_tcn.csv, na pasta data. ",
           "Este gráfico não usa as previsões mensais."
         ),
 
@@ -1414,7 +1452,7 @@ previsoes_todos_ui <- function(id) {
 
     shiny::fluidRow(
       bs4Dash::box(
-        title = "Perdas registradas por época — LSTM × GRU",
+        title = "Perdas registradas por época — LSTM × GRU × TCN",
         width = 12,
         status = "primary",
         solidHeader = FALSE,
@@ -1465,6 +1503,12 @@ previsoes_todos_server <- function(
       mustWork = FALSE
     )
 
+    caminho_historico_tcn <- normalizePath(
+      file.path(data_dir, "historico_perdas_tcn.csv"),
+      winslash = "/",
+      mustWork = FALSE
+    )
+
     caminho_gradientes_lstm <- normalizePath(
       file.path(data_dir, "historico_gradientes_lstm.csv"),
       winslash = "/",
@@ -1483,6 +1527,10 @@ previsoes_todos_server <- function(
           caminho_historico_gru,
           modelo_esperado = "GRU"
         ),
+        historico_tcn = pt_ler_historico(
+          caminho_historico_tcn,
+          modelo_esperado = "TCN"
+        ),
         gradientes_lstm = pt_ler_gradientes_lstm(
           caminho_gradientes_lstm
         ),
@@ -1493,9 +1541,10 @@ previsoes_todos_server <- function(
     shiny::observe({
       carregado <- arquivos()
 
-      locais_historico <- unique(
-        carregado$historico_lstm$dados$Localidade
-      )
+      locais_historico <- unique(c(
+        carregado$historico_lstm$dados$Localidade,
+        carregado$historico_tcn$dados$Localidade
+      ))
 
       locais <- sort(unique(c(
         locais_historico,
@@ -1707,21 +1756,22 @@ previsoes_todos_server <- function(
         )
     })
 
-    # Perdas de treinamento: LSTM local e GRU global.
+    # Perdas de treinamento: LSTM/TCN locais e GRU global.
     perdas_comparacao <- shiny::reactive({
       carregado <- arquivos()
 
       dados <- pt_dados_perdas_comparacao(
         historico_lstm = carregado$historico_lstm,
         historico_gru = carregado$historico_gru,
-        localidade = input$select_local
+        localidade = input$select_local,
+        historico_tcn = carregado$historico_tcn
       )
 
       shiny::validate(shiny::need(
         nrow(dados) > 0L,
         paste(
           "Não há histórico de treinamento válido para exibir.",
-          "Verifique os arquivos historico_perdas_lstm.csv e historico_perdas_gru.csv."
+          "Verifique os históricos de perdas LSTM, GRU e TCN na pasta data."
         )
       ))
 
@@ -1737,6 +1787,7 @@ previsoes_todos_server <- function(
       carregado <- arquivos()
       historico_lstm <- carregado$historico_lstm
       historico_gru <- carregado$historico_gru
+      historico_tcn <- carregado$historico_tcn
 
       aviso <- function(texto) {
         shiny::tags$p(
@@ -1753,6 +1804,10 @@ previsoes_todos_server <- function(
         shiny::tags$p(
           shiny::tags$strong("GRU — arquivo: "),
           shiny::tags$code(caminho_historico_gru)
+        ),
+        shiny::tags$p(
+          shiny::tags$strong("TCN — arquivo: "),
+          shiny::tags$code(caminho_historico_tcn)
         )
       )
 
@@ -1771,6 +1826,13 @@ previsoes_todos_server <- function(
           list(aviso(paste(
             "GRU:", historico_gru$erro
           )))
+        )
+      }
+
+      if (!is.null(historico_tcn$erro)) {
+        mensagens <- c(
+          mensagens,
+          list(aviso(paste("TCN:", historico_tcn$erro)))
         )
       }
 
@@ -1795,7 +1857,7 @@ previsoes_todos_server <- function(
         mensagens <- c(
           mensagens,
           list(aviso(
-            "LSTM: selecione uma localidade com histórico; somente a GRU disponível será exibida."
+            "LSTM: sem histórico para esta localidade; os demais históricos disponíveis continuam exibidos."
           ))
         )
       }
@@ -1821,12 +1883,36 @@ previsoes_todos_server <- function(
         )
       }
 
+      dados_tcn <- historico_tcn$dados[
+        historico_tcn$dados$Localidade %in% input$select_local,
+        ,
+        drop = FALSE
+      ]
+      if (nrow(dados_tcn)) {
+        mensagens <- c(
+          mensagens,
+          list(shiny::tags$p(
+            "TCN: ", nrow(dados_tcn), " épocas; ",
+            sum(is.finite(dados_tcn$Loss)), " perdas de treino; ",
+            sum(is.finite(dados_tcn$Val_Loss)), " perdas de validação."
+          ))
+        )
+      } else if (is.null(historico_tcn$erro)) {
+        mensagens <- c(
+          mensagens,
+          list(aviso("TCN: sem histórico para esta localidade; os demais históricos disponíveis continuam exibidos."))
+        )
+      }
+
       avisos <- c(
         if (length(historico_lstm$avisos)) {
           paste("LSTM:", historico_lstm$avisos)
         },
         if (length(historico_gru$avisos)) {
           paste("GRU:", historico_gru$avisos)
+        },
+        if (length(historico_tcn$avisos)) {
+          paste("TCN:", historico_tcn$avisos)
         }
       )
 
@@ -1843,11 +1929,14 @@ previsoes_todos_server <- function(
           style = "color:#4b5563;",
           paste(
             "A LSTM usa resíduo aditivo padronizado;",
-            "a GRU usa ruído multiplicativo padronizado.",
+            "a GRU usa ruído multiplicativo padronizado;",
+            "a TCN usa quantidade mensal em nível padronizado.",
             "Além dos alvos diferentes, as amostras e o número de",
             "atualizações por época diferem entre a rede local e a global.",
             "Este gráfico descreve o treinamento: menor perda entre",
-            "modelos não demonstra maior precisão das previsões."
+            "modelos não demonstra maior precisão das previsões.",
+            "A validação temporal da TCN é de um passo, anterior ao ano de teste;",
+            "boa perda interna não garante estabilidade da previsão recursiva longa."
           )
         ))
       )
@@ -1863,7 +1952,7 @@ previsoes_todos_server <- function(
     },
     res = 96,
     execOnResize = TRUE,
-    alt = "Perdas de treinamento e validação do LSTM e da GRU por época."
+    alt = "Perdas de treinamento e validação de LSTM, GRU e TCN por época."
     )
 
     # Gradientes: somente LSTM.
@@ -2022,7 +2111,9 @@ previsoes_todos_server <- function(
         "LSTM_Treino",
         "LSTM_Validacao",
         "GRU_Treino",
-        "GRU_Validacao"
+        "GRU_Validacao",
+        "TCN_Treino",
+        "TCN_Validacao"
       )
 
       tabela <- tabela[
@@ -2036,7 +2127,9 @@ previsoes_todos_server <- function(
         LSTM_Treino = "LSTM — treino",
         LSTM_Validacao = "LSTM — validação",
         GRU_Treino = "GRU — treino",
-        GRU_Validacao = "GRU — validação"
+        GRU_Validacao = "GRU — validação",
+        TCN_Treino = "TCN — treino",
+        TCN_Validacao = "TCN — validação"
       )
 
       DT::datatable(
@@ -2132,7 +2225,7 @@ previsoes_todos_server <- function(
       )
 
       paste0(
-        "perdas_lstm_gru_",
+        "perdas_lstm_gru_tcn_",
         local,
         ".",
         extensao

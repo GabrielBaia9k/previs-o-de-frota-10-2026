@@ -1,4 +1,5 @@
 # source("Previsoes_pre_compilacao/pre_compilar_xgboost.r", encoding = "UTF-8")
+
 # XGBoost CRAN: modelos independentes por municipio e para PARA (Geral).
 # Revisao: XGB-CRAN-LOCAL-ESTADO-5-LOG1P-DIF1; CSV mensal, erros no Shiny.
 # Execucao EXCLUSIVAMENTE na maquina local Windows/VS Code, R 4.5.3.
