@@ -1,12 +1,12 @@
 # ==============================================================================
-# previsoes_todos.R | COMPARACAO-NOVE-MODELOS-4
+# previsoes_todos.R | COMPARACAO-NOVE-MODELOS-8-VALIDACAO-ATE-2025
 #
 # Previsões: nove arquivos CSV em Previsoes_output/.
 # Históricos e gradientes: permanecem em data/.
 # Este módulo não treina modelos nem altera arquivos de dados.
 # ==============================================================================
 
-previsoes_todos_versao <- "COMPARACAO-NOVE-MODELOS-4"
+previsoes_todos_versao <- "COMPARACAO-NOVE-MODELOS-8-VALIDACAO-ATE-2025"
 
 pt_modelos <- c("ARIMA", "ETS", "SARIMA", "SARIMAX", "LSTM", "GRU", "XGBOOST", "PROPHET", "TCN")
 
@@ -379,8 +379,10 @@ pt_previsoes_vazias <- function() {
   )
 }
 
-pt_carregar_previsoes <- function(data_dir = here::here("Previsoes_output")) {
-  especificacoes <- data.frame(
+pt_carregar_previsoes <- function(
+    data_dir = here::here("Previsoes_output"), especificacoes = NULL
+) {
+  if (is.null(especificacoes)) especificacoes <- data.frame(
     Modelo = c("LSTM", "GRU", "ARIMA", "ETS", "SARIMA", "SARIMAX", "XGBOOST", "PROPHET", "TCN"),
     Arquivo = c(
       "previsoes_lstm_pre_comp.csv",
@@ -600,11 +602,103 @@ pt_dados_projecoes_comparacao <- function(dados, localidade) {
     dplyr::arrange(Data, Modelo)
 }
 
+# Produção: Real de 2016 a 2024. Validação: limites do treino da rodada.
+# MASE/RMSSE sazonais usam pares do mesmo mês em anos consecutivos (m = 12).
+# Referências: Hewamalage et al. (2023), DOI 10.1007/s10618-022-00894-5,
+# e Forecasting: Principles and Practice, seção 5.8 (escalas sazonais).
+pt_escalas_sazonais <- function(
+    dados_completos, localidade,
+    inicio = as.Date("2016-01-01"), fim = as.Date("2024-12-01")
+) {
+  if (!inherits(inicio, "Date") || !inherits(fim, "Date") ||
+      length(inicio) != 1L || length(fim) != 1L ||
+      is.na(inicio) || is.na(fim) || inicio > fim) {
+    stop("Limites inválidos para a escala sazonal.", call. = FALSE)
+  }
+  inicio <- as.Date(format(inicio, "%Y-%m-01"))
+  fim <- as.Date(format(fim, "%Y-%m-01"))
+  historico <- pt_filtrar_previsoes_localidade(
+    dados_completos, localidade
+  ) |>
+    dplyr::filter(
+      !is.na(Data), Data >= inicio, Data <= fim,
+      is.finite(Real)
+    )
+
+  referencia <- historico |>
+    dplyr::filter(Modelo == "SARIMAX") |>
+    dplyr::transmute(Data, Real, Fonte = "SARIMAX")
+
+  # Fallback somente se não houver Real histórico SARIMAX. Uma escala zero
+  # não autoriza trocar a fonte; nessa situação a métrica fica indisponível.
+  if (!nrow(referencia)) {
+    referencia <- pt_reais_projecao(historico, localidade)
+  }
+
+  escala <- list(
+    inicio = inicio, fim = fim, periodo = 12L,
+    fonte = if (nrow(referencia)) {
+      paste(unique(referencia$Fonte), collapse = ", ")
+    } else {
+      NA_character_
+    },
+    pares = 0L, mae = NA_real_, mse = NA_real_
+  )
+  if (!nrow(referencia)) return(escala)
+
+  # Calendário completo: meses sem Real ficam NA. Remover lacunas antes de
+  # deslocar 12 linhas criaria pares que não estão separados por 12 meses.
+  calendario <- seq(inicio, fim, by = "month")
+  if (length(calendario) <= 12L) return(escala)
+  meses <- as.Date(format(referencia$Data, "%Y-%m-01"))
+  valores <- referencia$Real[match(calendario, meses)]
+  atuais <- valores[seq.int(13L, length(valores))]
+  anteriores <- valores[seq_len(length(valores) - 12L)]
+  conhecidos <- is.finite(atuais) & is.finite(anteriores)
+  escala$pares <- as.integer(sum(conhecidos))
+
+  if (escala$pares > 0L) {
+    diferencas <- atuais[conhecidos] - anteriores[conhecidos]
+    d1 <- mean(abs(diferencas))
+    d2 <- mean(diferencas^2)
+    escala$mae <- if (is.finite(d1)) d1 else NA_real_
+    escala$mse <- if (is.finite(d2)) d2 else NA_real_
+  }
+  escala
+}
+
+pt_razao_erro <- function(numerador, denominador) {
+  if (length(numerador) != 1L || length(denominador) != 1L ||
+      !is.finite(numerador) || !is.finite(denominador) || denominador <= 0) {
+    return(NA_real_)
+  }
+  valor <- numerador / denominador
+  if (is.finite(valor)) valor else NA_real_
+}
+
+# Metadados de datas/contagens continuam no cálculo, mas não são colunas da UI.
+pt_tabela_erros_exibicao <- function(tabela) {
+  colunas <- c(
+    Modelo = "Modelo", MAPE = "MAPE (%)", MAE = "MAE (veículos)",
+    RMSE = "RMSE (veículos)", R2 = "R²", ME = "ME (veículos)",
+    MASE = "MASE", RMSSE = "RMSSE", RelMAE = "RelMAE (SARIMAX)"
+  )
+  resultado <- tabela[, names(colunas), drop = FALSE]
+  attr(resultado, "escala_sazonal") <- NULL
+  names(resultado) <- unname(colunas)
+  for (coluna in names(resultado)[-1L]) {
+    resultado[[coluna]][!is.finite(resultado[[coluna]])] <- NA_real_
+  }
+  resultado
+}
+
 pt_tabela_erros_projecoes <- function(
     projecoes,
     dados_completos,
     localidade,
-    periodo = "comum"
+    periodo = "comum",
+    inicio_escala = as.Date("2016-01-01"),
+    fim_escala = as.Date("2024-12-01")
 ) {
   periodo <- match.arg(periodo, c("comum", "individual"))
 
@@ -614,10 +708,15 @@ pt_tabela_erros_projecoes <- function(
 
   if (!length(modelos)) return(data.frame())
 
-  # Cada previsão é avaliada contra o Real do próprio modelo.
-  reais <- pt_filtrar_previsoes_localidade(
+  dados_localidade <- pt_filtrar_previsoes_localidade(
     dados_completos, localidade
-  ) |>
+  )
+  escala <- pt_escalas_sazonais(
+    dados_completos, localidade, inicio = inicio_escala, fim = fim_escala
+  )
+
+  # Cada previsão é avaliada contra o Real do próprio modelo.
+  reais <- dados_localidade |>
     dplyr::filter(
       Modelo %in% modelos,
       !is.na(Data),
@@ -627,6 +726,15 @@ pt_tabela_erros_projecoes <- function(
     dplyr::summarise(
       Real = dplyr::first(Real),
       .groups = "drop"
+    )
+
+  referencia <- dados_localidade |>
+    dplyr::filter(
+      Modelo == "SARIMAX", !is.na(Data), is.finite(Previsao)
+    ) |>
+    dplyr::group_by(Data) |>
+    dplyr::summarise(
+      Previsao = dplyr::first(Previsao), .groups = "drop"
     )
 
   avaliacao <- projecoes |>
@@ -663,6 +771,34 @@ pt_tabela_erros_projecoes <- function(
     n <- nrow(parte)
     erro <- parte$Previsao - parte$Real
     sem_zero <- parte$Real != 0
+    mae <- if (n) mean(abs(erro)) else NA_real_
+    rmse <- if (n) sqrt(mean(erro^2)) else NA_real_
+    me <- if (n) mean(parte$Real - parte$Previsao) else NA_real_
+    if (!is.finite(me)) me <- NA_real_
+
+    # Reavaliar SARIMAX contra os MESMOS Real/meses da linha atual. O MAE
+    # exibido na linha SARIMAX pode usar outra amostra no período individual.
+    indices_ref <- match(parte$Data, referencia$Data)
+    cobre_periodo <- n > 0L && all(!is.na(indices_ref))
+    mae_ref <- if (cobre_periodo) {
+      mean(abs(parte$Real - referencia$Previsao[indices_ref]))
+    } else {
+      NA_real_
+    }
+    relmae <- pt_razao_erro(mae, mae_ref)
+    motivo_relmae <- if (!n) {
+      "Sem meses observados com previsão."
+    } else if (!cobre_periodo) {
+      "SARIMAX sem previsão em todos os meses avaliados."
+    } else if (!is.finite(mae_ref)) {
+      "MAE do SARIMAX indisponível."
+    } else if (mae_ref == 0) {
+      "MAE do SARIMAX igual a zero nos meses avaliados."
+    } else if (!is.finite(relmae)) {
+      "Razão de erros indisponível."
+    } else {
+      ""
+    }
 
     sst <- if (n) {
       sum((parte$Real - mean(parte$Real))^2)
@@ -685,8 +821,8 @@ pt_tabela_erros_projecoes <- function(
         NA_real_
       },
 
-      MAE = if (n) mean(abs(erro)) else NA_real_,
-      RMSE = if (n) sqrt(mean(erro^2)) else NA_real_,
+      MAE = mae,
+      RMSE = rmse,
 
       R2 = if (n >= 2L && is.finite(sst) && sst > 0) {
         1 - sum(erro^2) / sst
@@ -694,17 +830,110 @@ pt_tabela_erros_projecoes <- function(
         NA_real_
       },
 
+      ME = me,
+      MASE = pt_razao_erro(mae, escala$mae),
+      RMSSE = pt_razao_erro(rmse, sqrt(escala$mse)),
+      RelMAE = relmae,
+      MAE_SARIMAX_ref = mae_ref,
+      Motivo_RelMAE = motivo_relmae,
+
       stringsAsFactors = FALSE
     )
   })
 
-  do.call(rbind, resultados)
+  tabela <- do.call(rbind, resultados)
+  attr(tabela, "escala_sazonal") <- escala
+  tabela
+}
+
+# --- Validação temporal: CSVs independentes produzidos na máquina local --------
+
+pt_carregar_validacao_sarimax <- function(previsoes_dir, ano_teste, ano_fim_teste = ano_teste) {
+  ano <- pt_numero(ano_teste)
+  fim <- pt_numero(ano_fim_teste)
+  if (length(ano) != 1L || !is.finite(ano) || ano != floor(ano) ||
+      ano < 1900 || ano > 9998) stop("Ano de teste inválido.", call. = FALSE)
+  if (length(fim) != 1L || !is.finite(fim) || fim != floor(fim) ||
+      fim < ano || fim > 9998) stop("Ano final do teste inválido.", call. = FALSE)
+  ano <- as.integer(ano)
+  fim <- as.integer(fim)
+  inicio_teste <- as.Date(sprintf("%04d-01-01", ano))
+  fim_teste <- as.Date(sprintf("%04d-12-01", fim))
+  arquivo <- if (ano == fim) sprintf("previsoes_sarimax_teste_%04d.csv", ano) else
+    sprintf("previsoes_sarimax_teste_%04d_%04d.csv", ano, fim)
+  carregado <- pt_carregar_previsoes(
+    file.path(previsoes_dir, "validacao_temporal", "SARIMAX"),
+    especificacoes = data.frame(Modelo = "SARIMAX", Arquivo = arquivo)
+  )
+  dados <- carregado$dados
+  if (nrow(dados)) {
+    erro <- if (anyNA(dados$Data) || anyNA(dados$Localidade) ||
+        any(!nzchar(dados$Localidade)) || any(format(dados$Data, "%d") != "01")) {
+      "Há datas ou localidades inválidas no CSV da rodada."
+    } else if (anyDuplicated(dados[c("Localidade", "Data")])) {
+      "Há meses duplicados por localidade no CSV da rodada."
+    } else if (any(dados$Data > fim_teste) || any(is.finite(dados$Previsao) &
+        (dados$Data < inicio_teste | dados$Data > fim_teste))) {
+      "O CSV contém datas ou previsões fora da janela de teste solicitada."
+    } else NULL
+    if (!is.null(erro)) {
+      carregado$dados <- pt_previsoes_vazias()
+      carregado$avisos <- c(carregado$avisos, erro)
+    }
+  }
+  carregado$ano_teste <- ano
+  carregado$ano_fim_teste <- fim
+  carregado$meses_teste <- as.integer(12L * (fim - ano + 1L))
+  carregado$inicio_teste <- inicio_teste
+  carregado$fim_teste <- fim_teste
+  carregado
+}
+
+pt_avaliar_validacao_sarimax <- function(carregado, localidade) {
+  dados <- pt_filtrar_previsoes_localidade(carregado$dados, localidade)
+  if (!nrow(dados)) stop("Não há resultados da rodada para esta localidade.", call. = FALSE)
+  datas_treino <- dados$Data[dados$Data < carregado$inicio_teste]
+  fim_treino <- carregado$inicio_teste - 1L
+  fim_escala <- as.Date(format(fim_treino, "%Y-%m-01"))
+  inicio_escala <- if (length(datas_treino)) min(datas_treino) else fim_escala
+  projecoes <- pt_dados_projecoes_comparacao(dados, localidade)
+  tabela <- pt_tabela_erros_projecoes(projecoes, dados, localidade,
+    periodo = "individual", inicio_escala = inicio_escala, fim_escala = fim_escala)
+  datas <- seq(carregado$inicio_teste, carregado$fim_teste, by = "month")
+  idx <- match(datas, dados$Data)
+  mensal <- data.frame(Data = datas, Real = dados$Real[idx],
+    Previsao = dados$Previsao[idx])
+  mensal$Horizonte <- seq_along(datas)
+  mensal$Real[!is.finite(mensal$Real)] <- NA_real_
+  mensal$Previsao[!is.finite(mensal$Previsao)] <- NA_real_
+  mensal$Erro <- mensal$Real - mensal$Previsao
+  mensal$Erro_absoluto <- abs(mensal$Erro)
+  mensal$Erro[!is.finite(mensal$Erro)] <- NA_real_
+  mensal$Erro_absoluto[!is.finite(mensal$Erro_absoluto)] <- NA_real_
+  # Mesmo treino/escala em todos os blocos anuais desta origem. Permite ler
+  # o comportamento em 2025 separadamente do erro de todo o horizonte.
+  anuais <- lapply(seq.int(carregado$ano_teste, carregado$ano_fim_teste), function(ano) {
+    parte <- projecoes[format(projecoes$Data, "%Y") == as.character(ano), , drop = FALSE]
+    erros <- pt_tabela_erros_projecoes(parte, dados, localidade,
+      periodo = "individual", inicio_escala = inicio_escala, fim_escala = fim_escala)
+    if (!nrow(erros)) return(NULL)
+    erros$Ano <- as.integer(ano)
+    erros
+  })
+  anuais <- Filter(Negate(is.null), anuais)
+  anuais <- if (length(anuais)) do.call(rbind, anuais) else data.frame()
+  list(completos = dados, projecoes = projecoes, metricas = tabela,
+    metricas_anuais = anuais, mensal = mensal, meses_teste = carregado$meses_teste,
+    inicio_treino = if (length(datas_treino)) min(datas_treino) else as.Date(NA_character_),
+    fim_treino = fim_treino,
+    meses_validos = sum(is.finite(mensal$Real) & is.finite(mensal$Previsao)))
 }
 
 pt_desenhar_projecoes <- function(
     projecoes,
     dados_completos,
-    localidade
+    localidade,
+    data_corte = NULL
 ) {
   opcoes_anteriores <- options(OutDec = ".")
   on.exit(options(opcoes_anteriores), add = TRUE)
@@ -833,16 +1062,20 @@ pt_desenhar_projecoes <- function(
     )
 
   # Anotacao independente da legenda: nao e um modelo e nao altera a escala Y.
-  if (nrow(reais)) {
+  if (nrow(reais) || !is.null(data_corte)) {
+    marcador <- if (is.null(data_corte)) max(reais$Data) else data_corte
+    rotulo_marcador <- if (is.null(data_corte)) "Último Real" else "Fim do treino"
     grafico$x$opts$series <- append(grafico$x$opts$series, list(list(
-      id = "pt_ultimo_real", name = "Último mês observado", type = "line",
+      id = if (is.null(data_corte)) "pt_ultimo_real" else "pt_corte_treino",
+      name = if (is.null(data_corte)) "Último mês observado" else rotulo_marcador,
+      type = "line",
       data = list(), silent = TRUE, showSymbol = FALSE,
       tooltip = list(show = FALSE),
       markLine = list(
         silent = TRUE, symbol = c("none", "none"),
-        label = list(formatter = "Último Real", position = "insideEndTop"),
+        label = list(formatter = rotulo_marcador, position = "insideEndTop"),
         lineStyle = list(color = "#6B7280", type = "dotted", width = 1),
-        data = list(list(xAxis = as.numeric(max(reais$Data)) * 86400000))
+        data = list(list(xAxis = as.numeric(marcador) * 86400000))
       )
     )))
   }
@@ -862,7 +1095,8 @@ pt_historico_disponivel <- function(historico) {
 pt_dados_perdas_comparacao <- function(
     historico_lstm,
     historico_gru,
-    localidade
+    localidade,
+    historico_tcn = NULL
 ) {
   partes <- list()
 
@@ -909,6 +1143,25 @@ pt_dados_perdas_comparacao <- function(
         Epoca = gru$Epoca,
         Serie = "GRU_Validacao",
         Valor = gru$Val_Loss,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  if (pt_historico_disponivel(historico_tcn)) {
+    tcn <- historico_tcn$dados[
+      historico_tcn$dados$Localidade %in% localidade,
+      ,
+      drop = FALSE
+    ]
+
+    if (nrow(tcn) > 0L) {
+      partes[[length(partes) + 1L]] <- data.frame(
+        Epoca = tcn$Epoca, Serie = "TCN_Treino", Valor = tcn$Loss,
+        stringsAsFactors = FALSE
+      )
+      partes[[length(partes) + 1L]] <- data.frame(
+        Epoca = tcn$Epoca, Serie = "TCN_Validacao", Valor = tcn$Val_Loss,
         stringsAsFactors = FALSE
       )
     }
@@ -999,8 +1252,12 @@ pt_desenhar_perdas <- function(dados, localidade) {
 
   escopos <- character()
 
-  if (any(grepl("^LSTM_", dados$Serie))) {
-    escopos <- c(escopos, paste("LSTM:", localidade))
+  redes_locais <- c(
+    if (any(grepl("^LSTM_", dados$Serie))) "LSTM",
+    if (any(grepl("^TCN_", dados$Serie))) "TCN"
+  )
+  if (length(redes_locais)) {
+    escopos <- c(escopos, paste0(paste(redes_locais, collapse = "/"), ": ", localidade))
   }
 
   if (any(grepl("^GRU_", dados$Serie))) {
@@ -1018,35 +1275,45 @@ pt_desenhar_perdas <- function(dados, localidade) {
     "LSTM_Treino",
     "LSTM_Validacao",
     "GRU_Treino",
-    "GRU_Validacao"
+    "GRU_Validacao",
+    "TCN_Treino",
+    "TCN_Validacao"
   )
 
   rotulos <- c(
     LSTM_Treino = "LSTM - treino",
     LSTM_Validacao = "LSTM - validação",
     GRU_Treino = "GRU - treino",
-    GRU_Validacao = "GRU - validação"
+    GRU_Validacao = "GRU - validação",
+    TCN_Treino = "TCN - treino",
+    TCN_Validacao = "TCN - validação"
   )
 
   cores <- c(
     LSTM_Treino = "#1D44B8",
     LSTM_Validacao = "#1D44B8",
     GRU_Treino = "#C0392B",
-    GRU_Validacao = "#C0392B"
+    GRU_Validacao = "#C0392B",
+    TCN_Treino = "#4D7C0F",
+    TCN_Validacao = "#4D7C0F"
   )
 
   tipos <- c(
     LSTM_Treino = 1,
     LSTM_Validacao = 2,
     GRU_Treino = 1,
-    GRU_Validacao = 2
+    GRU_Validacao = 2,
+    TCN_Treino = 1,
+    TCN_Validacao = 2
   )
 
   pontos <- c(
     LSTM_Treino = 16,
     LSTM_Validacao = 1,
     GRU_Treino = 17,
-    GRU_Validacao = 2
+    GRU_Validacao = 2,
+    TCN_Treino = 15,
+    TCN_Validacao = 0
   )
 
   for (serie in series) {
@@ -1107,7 +1374,7 @@ pt_desenhar_perdas <- function(dados, localidade) {
     xjust = 0.5,
     yjust = 0,
     xpd = NA,
-    ncol = 2,
+    ncol = if (length(presentes) > 4L) 3L else 2L,
     legend = unname(rotulos[presentes]),
     col = unname(cores[presentes]),
     lty = unname(tipos[presentes]),
@@ -1262,7 +1529,7 @@ previsoes_todos_ui <- function(id) {
   shiny::fluidPage(
     shiny::fluidRow(
       bs4Dash::box(
-        title = "Resultados dos modelos e treinamento LSTM × GRU",
+        title = "Resultados dos modelos e treinamento LSTM × GRU × TCN",
         width = 12,
         status = "primary",
         solidHeader = FALSE,
@@ -1335,6 +1602,15 @@ previsoes_todos_ui <- function(id) {
           "quando os valores reais não variam."
         ),
 
+        shiny::tags$p(
+          "ME = Real − Previsão: positivo indica subestimação; negativo, superestimação. ",
+          "MASE e RMSSE usam uma escala sazonal de 12 meses, calculada somente com ",
+          "valores reais de 2016–2024; valores abaixo de 1 indicam erros menores ",
+          "que essa escala histórica. RelMAE compara o MAE do modelo com o do ",
+          "SARIMAX nos mesmos meses e valores reais; abaixo de 1 indica menor erro. ",
+          "Escalas sem dados ou iguais a zero e referências indisponíveis aparecem como N/A."
+        ),
+
         shiny::selectInput(
           ns("periodo_metricas"),
           "PERÍODO PARA AS MÉTRICAS",
@@ -1346,13 +1622,59 @@ previsoes_todos_ui <- function(id) {
           width = "100%"
         ),
 
+        shiny::uiOutput(ns("status_metricas")),
         DT::dataTableOutput(ns("tabela_erros_projecoes"))
       )
     ),
 
     shiny::fluidRow(
       bs4Dash::box(
-        title = "Perdas de treinamento e validação — LSTM × GRU",
+        title = "Validação temporal — SARIMAX",
+        width = 12,
+        status = "info",
+        solidHeader = FALSE,
+        maximizable = TRUE,
+        shiny::tags$p(
+          "Cada rodada ajusta o modelo até dezembro do ano anterior e prevê ",
+          "continuamente até dezembro de 2025, sem incorporar os valores reais do teste. ",
+          "Escolha a janela e a localidade para comparar ",
+          "os valores reais com as previsões. Os erros são calculados ao abrir esta seção."
+        ),
+        shiny::fluidRow(
+          shiny::column(4, shiny::selectInput(ns("ano_validacao"),
+            "JANELA DE TESTE", choices = c("2021–2025 (60 meses)" = "2021",
+              "2022–2025 (48 meses)" = "2022", "2023–2025 (36 meses)" = "2023",
+              "2024–2025 (24 meses)" = "2024"), selected = "2024")),
+          shiny::column(8, shiny::selectInput(ns("local_validacao"),
+            "LOCALIDADE DA VALIDAÇÃO", choices = character()))
+        ),
+        shiny::uiOutput(ns("status_validacao")),
+        echarts4r::echarts4rOutput(ns("grafico_validacao"),
+          width = "100%", height = "460px"),
+        shiny::tags$p(
+          "A linha tracejada marca o fim do treino. Somente os meses da janela de teste ",
+          "entram nos erros. MASE e RMSSE usam a escala sazonal do treino desta ",
+          "rodada. RelMAE usa o próprio SARIMAX como referência, sendo 1 quando definido."
+        ),
+        shiny::tags$h4("Erros do período completo"),
+        DT::dataTableOutput(ns("metricas_validacao")),
+        shiny::tags$h4("Erros por ano previsto"),
+        shiny::tags$p(
+          "As janelas têm durações diferentes. Use os blocos anuais para identificar ",
+          "quando a previsão perde precisão e para comparar um mesmo ano observado ",
+          "entre as origens, considerando também a distância de cada corte."
+        ),
+        DT::dataTableOutput(ns("anuais_validacao")),
+        shiny::tags$details(
+          shiny::tags$summary("Ver valores mensais e erros do teste"),
+          DT::dataTableOutput(ns("mensal_validacao"))
+        )
+      )
+    ),
+
+    shiny::fluidRow(
+      bs4Dash::box(
+        title = "Perdas de treinamento e validação — LSTM × GRU × TCN",
         width = 12,
         status = "primary",
         solidHeader = FALSE,
@@ -1361,9 +1683,9 @@ previsoes_todos_ui <- function(id) {
         shiny::tags$p(
           "Valores registrados pelo Keras durante fit(): Loss no treino e ",
           "Val_Loss na validação interna, por época. A função de perda é MSE ",
-          "no alvo normalizado de cada rede. O LSTM corresponde à localidade selecionada; ",
+          "no alvo normalizado de cada rede. LSTM e TCN correspondem à localidade selecionada; ",
           "a GRU corresponde ao modelo global. Os históricos são lidos de ",
-          "historico_perdas_lstm.csv e historico_perdas_gru.csv, na pasta data. ",
+          "historico_perdas_lstm.csv, historico_perdas_gru.csv e historico_perdas_tcn.csv, na pasta data. ",
           "Este gráfico não usa as previsões mensais."
         ),
 
@@ -1418,7 +1740,7 @@ previsoes_todos_ui <- function(id) {
 
     shiny::fluidRow(
       bs4Dash::box(
-        title = "Perdas registradas por época — LSTM × GRU",
+        title = "Perdas registradas por época — LSTM × GRU × TCN",
         width = 12,
         status = "primary",
         solidHeader = FALSE,
@@ -1469,6 +1791,12 @@ previsoes_todos_server <- function(
       mustWork = FALSE
     )
 
+    caminho_historico_tcn <- normalizePath(
+      file.path(data_dir, "historico_perdas_tcn.csv"),
+      winslash = "/",
+      mustWork = FALSE
+    )
+
     caminho_gradientes_lstm <- normalizePath(
       file.path(data_dir, "historico_gradientes_lstm.csv"),
       winslash = "/",
@@ -1487,6 +1815,10 @@ previsoes_todos_server <- function(
           caminho_historico_gru,
           modelo_esperado = "GRU"
         ),
+        historico_tcn = pt_ler_historico(
+          caminho_historico_tcn,
+          modelo_esperado = "TCN"
+        ),
         gradientes_lstm = pt_ler_gradientes_lstm(
           caminho_gradientes_lstm
         ),
@@ -1497,9 +1829,10 @@ previsoes_todos_server <- function(
     shiny::observe({
       carregado <- arquivos()
 
-      locais_historico <- unique(
-        carregado$historico_lstm$dados$Localidade
-      )
+      locais_historico <- unique(c(
+        carregado$historico_lstm$dados$Localidade,
+        carregado$historico_tcn$dados$Localidade
+      ))
 
       locais <- sort(unique(c(
         locais_historico,
@@ -1634,17 +1967,58 @@ previsoes_todos_server <- function(
       )
     })
 
-    output$tabela_erros_projecoes <- DT::renderDataTable({
+    metricas_projecoes <- shiny::reactive({
       shiny::req(input$periodo_metricas)
 
       dados <- projecoes_comparacao()
 
-      tabela <- pt_tabela_erros_projecoes(
+      pt_tabela_erros_projecoes(
         projecoes = dados$projecoes,
         dados_completos = dados$completos,
         localidade = input$select_local,
         periodo = input$periodo_metricas
       )
+    })
+
+    output$status_metricas <- shiny::renderUI({
+      tabela <- metricas_projecoes()
+      shiny::req(nrow(tabela) > 0L)
+      escala <- attr(tabela, "escala_sazonal")
+      fonte <- if (is.na(escala$fonte)) "indisponível" else escala$fonte
+      escalas_invalidas <- c(
+        if (!is.finite(escala$mae) || escala$mae <= 0) "MASE",
+        if (!is.finite(escala$mse) || escala$mse <= 0) "RMSSE"
+      )
+      sem_referencia <- tabela[
+        tabela$Periodos_validos > 0L & !is.finite(tabela$RelMAE),
+        c("Modelo", "Motivo_RelMAE"), drop = FALSE
+      ]
+
+      shiny::tagList(
+        shiny::tags$p(shiny::tags$small(
+          "Escala sazonal 2016–2024: Real de ", fonte,
+          "; ", escala$pares, " pares anuais conhecidos."
+        )),
+        if (length(escalas_invalidas)) {
+          shiny::tags$p(shiny::tags$small(
+            paste(escalas_invalidas, collapse = " e "),
+            ": N/A por escala histórica sem pares válidos, nula ou não finita."
+          ))
+        },
+        lapply(unique(sem_referencia$Motivo_RelMAE), function(motivo) {
+          modelos <- sem_referencia$Modelo[
+            sem_referencia$Motivo_RelMAE == motivo
+          ]
+          shiny::tags$p(shiny::tags$small(
+            "RelMAE indisponível para ", paste(modelos, collapse = ", "),
+            ": ", motivo
+          ))
+        })
+      )
+    })
+
+    output$tabela_erros_projecoes <- DT::renderDataTable({
+      tabela <- metricas_projecoes()
 
       shiny::validate(shiny::need(
         nrow(tabela) > 0L &&
@@ -1657,29 +2031,7 @@ previsoes_todos_server <- function(
         }
       ))
 
-      tabela$Inicio <- ifelse(
-        is.na(tabela$Inicio),
-        "N/A",
-        format(tabela$Inicio, "%m/%Y")
-      )
-
-      tabela$Fim <- ifelse(
-        is.na(tabela$Fim),
-        "N/A",
-        format(tabela$Fim, "%m/%Y")
-      )
-
-      names(tabela) <- c(
-        "Modelo",
-        "Início",
-        "Fim",
-        "Períodos válidos",
-        "Períodos MAPE",
-        "MAPE (%)",
-        "MAE (veículos)",
-        "RMSE (veículos)",
-        "R²"
-      )
+      tabela <- pt_tabela_erros_exibicao(tabela)
 
       DT::datatable(
         tabela,
@@ -1701,31 +2053,33 @@ previsoes_todos_server <- function(
           columns = c(
             "MAPE (%)",
             "MAE (veículos)",
-            "RMSE (veículos)"
+            "RMSE (veículos)",
+            "ME (veículos)"
           ),
           digits = 2
         ) |>
         DT::formatRound(
-          columns = "R²",
+          columns = c("R²", "MASE", "RMSSE", "RelMAE (SARIMAX)"),
           digits = 3
         )
     })
 
-    # Perdas de treinamento: LSTM local e GRU global.
+    # Perdas de treinamento: LSTM/TCN locais e GRU global.
     perdas_comparacao <- shiny::reactive({
       carregado <- arquivos()
 
       dados <- pt_dados_perdas_comparacao(
         historico_lstm = carregado$historico_lstm,
         historico_gru = carregado$historico_gru,
-        localidade = input$select_local
+        localidade = input$select_local,
+        historico_tcn = carregado$historico_tcn
       )
 
       shiny::validate(shiny::need(
         nrow(dados) > 0L,
         paste(
           "Não há histórico de treinamento válido para exibir.",
-          "Verifique os arquivos historico_perdas_lstm.csv e historico_perdas_gru.csv."
+          "Verifique os históricos de perdas LSTM, GRU e TCN na pasta data."
         )
       ))
 
@@ -1741,6 +2095,7 @@ previsoes_todos_server <- function(
       carregado <- arquivos()
       historico_lstm <- carregado$historico_lstm
       historico_gru <- carregado$historico_gru
+      historico_tcn <- carregado$historico_tcn
 
       aviso <- function(texto) {
         shiny::tags$p(
@@ -1757,6 +2112,10 @@ previsoes_todos_server <- function(
         shiny::tags$p(
           shiny::tags$strong("GRU — arquivo: "),
           shiny::tags$code(caminho_historico_gru)
+        ),
+        shiny::tags$p(
+          shiny::tags$strong("TCN — arquivo: "),
+          shiny::tags$code(caminho_historico_tcn)
         )
       )
 
@@ -1775,6 +2134,13 @@ previsoes_todos_server <- function(
           list(aviso(paste(
             "GRU:", historico_gru$erro
           )))
+        )
+      }
+
+      if (!is.null(historico_tcn$erro)) {
+        mensagens <- c(
+          mensagens,
+          list(aviso(paste("TCN:", historico_tcn$erro)))
         )
       }
 
@@ -1799,7 +2165,7 @@ previsoes_todos_server <- function(
         mensagens <- c(
           mensagens,
           list(aviso(
-            "LSTM: selecione uma localidade com histórico; somente a GRU disponível será exibida."
+            "LSTM: sem histórico para esta localidade; os demais históricos disponíveis continuam exibidos."
           ))
         )
       }
@@ -1825,12 +2191,36 @@ previsoes_todos_server <- function(
         )
       }
 
+      dados_tcn <- historico_tcn$dados[
+        historico_tcn$dados$Localidade %in% input$select_local,
+        ,
+        drop = FALSE
+      ]
+      if (nrow(dados_tcn)) {
+        mensagens <- c(
+          mensagens,
+          list(shiny::tags$p(
+            "TCN: ", nrow(dados_tcn), " épocas; ",
+            sum(is.finite(dados_tcn$Loss)), " perdas de treino; ",
+            sum(is.finite(dados_tcn$Val_Loss)), " perdas de validação."
+          ))
+        )
+      } else if (is.null(historico_tcn$erro)) {
+        mensagens <- c(
+          mensagens,
+          list(aviso("TCN: sem histórico para esta localidade; os demais históricos disponíveis continuam exibidos."))
+        )
+      }
+
       avisos <- c(
         if (length(historico_lstm$avisos)) {
           paste("LSTM:", historico_lstm$avisos)
         },
         if (length(historico_gru$avisos)) {
           paste("GRU:", historico_gru$avisos)
+        },
+        if (length(historico_tcn$avisos)) {
+          paste("TCN:", historico_tcn$avisos)
         }
       )
 
@@ -1847,11 +2237,14 @@ previsoes_todos_server <- function(
           style = "color:#4b5563;",
           paste(
             "A LSTM usa resíduo aditivo padronizado;",
-            "a GRU usa ruído multiplicativo padronizado.",
+            "a GRU usa ruído multiplicativo padronizado;",
+            "a TCN usa quantidade mensal em nível padronizado.",
             "Além dos alvos diferentes, as amostras e o número de",
             "atualizações por época diferem entre a rede local e a global.",
             "Este gráfico descreve o treinamento: menor perda entre",
-            "modelos não demonstra maior precisão das previsões."
+            "modelos não demonstra maior precisão das previsões.",
+            "A validação temporal da TCN é de um passo, anterior ao ano de teste;",
+            "boa perda interna não garante estabilidade da previsão recursiva longa."
           )
         ))
       )
@@ -1867,7 +2260,7 @@ previsoes_todos_server <- function(
     },
     res = 96,
     execOnResize = TRUE,
-    alt = "Perdas de treinamento e validação do LSTM e da GRU por época."
+    alt = "Perdas de treinamento e validação de LSTM, GRU e TCN por época."
     )
 
     # Gradientes: somente LSTM.
@@ -2026,7 +2419,9 @@ previsoes_todos_server <- function(
         "LSTM_Treino",
         "LSTM_Validacao",
         "GRU_Treino",
-        "GRU_Validacao"
+        "GRU_Validacao",
+        "TCN_Treino",
+        "TCN_Validacao"
       )
 
       tabela <- tabela[
@@ -2040,7 +2435,9 @@ previsoes_todos_server <- function(
         LSTM_Treino = "LSTM — treino",
         LSTM_Validacao = "LSTM — validação",
         GRU_Treino = "GRU — treino",
-        GRU_Validacao = "GRU — validação"
+        GRU_Validacao = "GRU — validação",
+        TCN_Treino = "TCN — treino",
+        TCN_Validacao = "TCN — validação"
       )
 
       DT::datatable(
@@ -2136,7 +2533,7 @@ previsoes_todos_server <- function(
       )
 
       paste0(
-        "perdas_lstm_gru_",
+        "perdas_lstm_gru_tcn_",
         local,
         ".",
         extensao
@@ -2190,10 +2587,118 @@ previsoes_todos_server <- function(
       }
     )
 
+    # Validação temporal: lê os arquivos do controlador, sem ajustar modelos.
+    arquivos_validacao <- shiny::reactive({
+      input$recarregar
+      ano <- if (length(input$ano_validacao)) input$ano_validacao else 2024L
+      pt_carregar_validacao_sarimax(previsoes_dir, ano, ano_fim_teste = 2025L)
+    })
+
+    shiny::observe({
+      locais <- sort(unique(arquivos_validacao()$dados$Localidade))
+      locais <- locais[!is.na(locais) & nzchar(locais)]
+      atual <- shiny::isolate(input$local_validacao)
+      inicial <- if ("Pará" %in% locais) "Pará" else head(locais, 1L)
+      selecionado <- if (length(atual) == 1L && atual %in% locais) atual else inicial
+      shiny::updateSelectInput(session, "local_validacao",
+        choices = locais, selected = selecionado)
+    })
+
+    dados_validacao <- shiny::reactive({
+      carregado <- arquivos_validacao()
+      shiny::validate(shiny::need(nrow(carregado$dados) > 0L,
+        "Sem resultados desta rodada. Execute o controlador local e recarregue os arquivos."))
+      shiny::req(input$local_validacao)
+      shiny::validate(shiny::need(input$local_validacao %in% carregado$dados$Localidade,
+        "Selecione uma localidade disponível nesta rodada."))
+      pt_avaliar_validacao_sarimax(carregado, input$local_validacao)
+    })
+
+    output$status_validacao <- shiny::renderUI({
+      carregado <- arquivos_validacao()
+      avisos <- if (length(carregado$avisos)) shiny::tags$details(
+        shiny::tags$summary("Avisos da rodada"),
+        shiny::tags$ul(lapply(carregado$avisos, shiny::tags$li)))
+      if (!nrow(carregado$dados)) return(shiny::tagList(
+        shiny::tags$p("Ainda não há resultados válidos para ", carregado$ano_teste,
+          "–", carregado$ano_fim_teste,
+          ". Execute validar_sarimax.r na máquina local e clique em Recarregar arquivos."),
+        avisos))
+      shiny::req(input$local_validacao)
+      dados <- dados_validacao()
+      escala <- attr(dados$metricas, "escala_sazonal")
+      shiny::tagList(
+        shiny::tags$p(shiny::tags$strong(paste0("Teste: ",
+          format(carregado$inicio_teste, "%m/%Y"), " a ",
+          format(carregado$fim_teste, "%m/%Y"), ". ")),
+          "Treino: ", if (is.na(dados$inicio_treino)) "início não informado" else
+            format(dados$inicio_treino, "%m/%Y"), " a ",
+          format(dados$fim_treino, "%m/%Y"), "; ", dados$meses_validos,
+          " de ", carregado$meses_teste, " meses com Real e Previsão disponíveis."),
+        shiny::tags$p(shiny::tags$small(
+          "Real e previsão pertencem ao CSV da rodada selecionada. ",
+          "Este painel não utiliza as previsões de produção nem seus históricos de perdas.")),
+        if (!is.null(escala)) shiny::tags$p(shiny::tags$small(
+          "Escala sazonal do treino: ", escala$pares, " pares anuais conhecidos. ",
+          if (!is.finite(escala$mae) || escala$mae <= 0 ||
+              !is.finite(escala$mse) || escala$mse <= 0) {
+            "MASE/RMSSE indisponíveis quando a escala não tem pares válidos ou é nula."
+          } else "ME = Real − Previsão: positivo indica subestimação.")),
+        avisos
+      )
+    })
+
+    output$grafico_validacao <- echarts4r::renderEcharts4r({
+      dados <- dados_validacao()
+      shiny::validate(shiny::need(nrow(dados$projecoes) > 0L,
+        "Não há previsões válidas para desenhar nesta rodada."))
+      pt_desenhar_projecoes(dados$projecoes, dados$completos,
+        input$local_validacao, data_corte = dados$fim_treino)
+    })
+
+    output$metricas_validacao <- DT::renderDataTable({
+      tabela <- dados_validacao()$metricas
+      shiny::validate(shiny::need(nrow(tabela) > 0L && any(tabela$Periodos_validos > 0L),
+        "Não há meses de teste com Real e Previsão para calcular os erros."))
+      DT::datatable(pt_tabela_erros_exibicao(tabela), rownames = FALSE,
+        options = list(paging = FALSE, scrollX = TRUE, dom = "t", ordering = FALSE,
+          columnDefs = list(list(targets = "_all", defaultContent = "N/A")))) |>
+        DT::formatRound(columns = c("MAPE (%)", "MAE (veículos)",
+          "RMSE (veículos)", "ME (veículos)"), digits = 2) |>
+        DT::formatRound(columns = c("R²", "MASE", "RMSSE", "RelMAE (SARIMAX)"), digits = 3)
+    })
+
+    output$mensal_validacao <- DT::renderDataTable({
+      tabela <- dados_validacao()$mensal
+      tabela <- tabela[c("Data", "Horizonte", "Real", "Previsao", "Erro", "Erro_absoluto")]
+      tabela$Data <- format(tabela$Data, "%m/%Y")
+      names(tabela) <- c("Mês", "Horizonte (meses)", "Real", "Previsão",
+        "Erro (Real − Previsão)", "Erro absoluto")
+      DT::datatable(tabela, rownames = FALSE,
+        options = list(pageLength = 12, lengthChange = FALSE, scrollX = TRUE,
+          dom = "tip", ordering = FALSE,
+          columnDefs = list(list(targets = "_all", defaultContent = "N/A")))) |>
+        DT::formatRound(columns = names(tabela)[-(1:2)], digits = 2)
+    })
+
+    output$anuais_validacao <- DT::renderDataTable({
+      tabela <- dados_validacao()$metricas_anuais
+      shiny::validate(shiny::need(nrow(tabela) > 0L,
+        "Não há meses observados para calcular os erros anuais."))
+      exibida <- cbind(Ano = tabela$Ano, pt_tabela_erros_exibicao(tabela))
+      DT::datatable(exibida, rownames = FALSE,
+        options = list(paging = FALSE, scrollX = TRUE, dom = "t", ordering = FALSE,
+          columnDefs = list(list(targets = "_all", defaultContent = "N/A")))) |>
+        DT::formatRound(columns = c("MAPE (%)", "MAE (veículos)",
+          "RMSE (veículos)", "ME (veículos)"), digits = 2) |>
+        DT::formatRound(columns = c("R²", "MASE", "RMSSE", "RelMAE (SARIMAX)"), digits = 3)
+    })
+
     invisible(list(
       perdas = perdas_comparacao,
       projecoes = projecoes_comparacao,
-      arquivos = arquivos
+      arquivos = arquivos,
+      validacao = dados_validacao
     ))
   })
 }
