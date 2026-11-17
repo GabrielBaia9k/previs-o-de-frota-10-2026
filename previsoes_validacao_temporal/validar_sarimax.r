@@ -1,11 +1,17 @@
-  # VALIDACAO-SARIMAX-3-CONFIG-COMUM
+# VALIDACAO-SARIMAX-5-LOG-AO-VIVO-TEMPO
 # Executar no R local, com a raiz do projeto como diretorio:
 # source("previsoes_validacao_temporal/validar_sarimax.r", encoding = "UTF-8")
 # Editar anos/localidades/destinos no bloco inicial de config_validacao_temporal.r.
 # O controlador consulta essa configuracao e passa os recortes ao pre-compilador.
 # Cada rodada gera somente seu CSV mensal; erros serao avaliados em runtime.
-# Um unico ajuste por origem, sem incorporar Real durante o teste ate 2025.
+# Um unico ajuste por localidade e origem, sem incorporar Real durante o teste.
+# Janelas em sequencia; ate seis localidades simultaneas por janela.
+# Dependencias de entrega: auxiliar de configuracao e produtor SARIMAX atualizado.
+# Revisao de leitura (16/11/2026): blocos numerados; comportamento preservado.
+# Este arquivo roda no PAI. O codigo dos WORKERS esta no pre-compilador.
+# Fluxo: conferir dados -> conferir reuso -> criar cluster -> janelas -> encerrar.
 
+# ---- 1. CONFIGURACAO: IMPORTAR O BLOCO CENTRALIZADO ----------------------------
 config_validacao_sarimax <- local({
   caminho <- "previsoes_validacao_temporal/config_validacao_temporal.r"
   if (!file.exists(caminho)) stop("Arquivo necessario: ", caminho)
@@ -17,6 +23,8 @@ config_validacao_sarimax <- local({
   comum$configurar_validacao_temporal("SARIMAX")
 })
 
+# ---- 2. PAI: CONFERIR A REFERENCIA ANUAL DE 2025 -------------------------------
+# Somente le e prepara a copia. Nao treina modelos nem inicia workers.
 preparar_reuso_sarimax_2025 <- function(caminho, dados, localidades, periodos, produtor) {
   if (!file.exists(caminho)) {
     stop("CSV de 2025 nao encontrado: ", caminho,
@@ -84,7 +92,30 @@ preparar_reuso_sarimax_2025 <- function(caminho, dados, localidades, periodos, p
   resultado
 }
 
+# ---- 3. PAI: COORDENAR TODA A VALIDACAO ---------------------------------------
 executar_validacao_sarimax <- function(config = config_validacao_sarimax) {
+  # 3.0. Registrar primeiro a limpeza e o TEMPO TOTAL. Este cronometro inclui
+  # leitura, verificacao do reuso, criacao do cluster, rodadas, CSVs e encerramento.
+  inicio_total <- proc.time()[["elapsed"]]
+  cluster <- NULL
+  opcoes <- NULL
+  on.exit({
+    if (!is.null(cluster)) {
+      message("Encerrando os processos SARIMAX...")
+      tryCatch(parallel::stopCluster(cluster), error = function(e) {
+        message("Falha ao encerrar o cluster: ", conditionMessage(e))
+      })
+    }
+    if (!is.null(opcoes)) options(opcoes)
+    segundos <- proc.time()[["elapsed"]] - inicio_total
+    inteiros <- floor(segundos)
+    duracao <- sprintf("%02.0f:%02.0f:%02.0f", inteiros %/% 3600,
+      (inteiros %% 3600) %/% 60, inteiros %% 60)
+    message("TEMPO TOTAL DA VALIDACAO SARIMAX: ", duracao,
+      " (", round(segundos, 2L), " s).")
+    flush.console()
+  }, add = TRUE)
+  # 3.1. Conferir auxiliar, recortes e opcoes de execucao.
   if (!file.exists(config$script_recortes)) stop("Arquivo necessario: ", config$script_recortes)
   recortes <- new.env(parent = baseenv())
   source(config$script_recortes, local = recortes, encoding = "UTF-8")
@@ -94,14 +125,26 @@ executar_validacao_sarimax <- function(config = config_validacao_sarimax) {
   fim <- as.integer(config$ano_fim_teste)
   if (!is.logical(config$reutilizar_2025) || length(config$reutilizar_2025) != 1L ||
       is.na(config$reutilizar_2025)) stop("reutilizar_2025 deve ser TRUE ou FALSE.")
+  if (!is.logical(config$paralelo) || length(config$paralelo) != 1L ||
+      is.na(config$paralelo)) stop("paralelo deve ser TRUE ou FALSE.")
+  if (!is.numeric(config$processos) || length(config$processos) != 1L ||
+      !is.finite(config$processos) || config$processos < 1 || config$processos > .Machine$integer.max ||
+      config$processos != floor(config$processos)) stop("processos deve ser um inteiro positivo.")
   if (!requireNamespace("dplyr", quietly = TRUE)) {
     stop('Instale no R local: install.packages("dplyr", repos = "http://cran.rstudio.com/")')
   }
+  # 3.2. Importar funcoes do produtor sem disparar sua previsao de producao.
   produtor <- new.env(parent = globalenv())
   opcoes <- options(frota.sarimax.apenas_funcoes = TRUE)
-  on.exit(options(opcoes), add = TRUE)
   source(config$script_pre_compilacao, local = produtor, encoding = "UTF-8")
   options(opcoes)
+  if (!is.function(produtor$criar_cluster_sarimax) ||
+      !is.function(produtor$executar_sarimax_local) ||
+      !"cluster" %in% names(formals(produtor$executar_sarimax_local))) {
+    stop("Atualize ", config$script_pre_compilacao,
+      " junto com o controlador: produtor sem suporte ao paralelismo por localidade.")
+  }
+  # 3.3. Ler a base uma vez e definir todas as localidades da execucao.
   dados <- produtor$ler_dados_sarimax(config$entrada)
   ultimo_real <- dados$Data[is.finite(dados$QTD_VEICULO)]
   fim_mensal <- as.Date(sprintf("%04d-12-01", as.integer(fim)))
@@ -109,6 +152,19 @@ executar_validacao_sarimax <- function(config = config_validacao_sarimax) {
     stop("A entrada nao possui observacoes ate dezembro de ano_fim_teste. Confira o recorte.")
   }
   localidades <- produtor$sarimax_localidades(dados, config$localidades)
+  # 3.4. Conferir todos os destinos antes de iniciar qualquer ajuste ou gravacao.
+  saidas <- stats::setNames(vapply(anos, function(ano) {
+    file.path(config$pasta_saida, recortes$nome_arquivo_validacao("SARIMAX", ano, fim))
+  }, character(1L)), as.character(anos))
+  canonico <- function(x) tolower(normalizePath(x, winslash = "/", mustWork = FALSE))
+  protegidos <- unique(c(config$entrada, config$referencia_2025,
+    produtor$config_sarimax_local$saida))
+  if (anyDuplicated(vapply(saidas, canonico, character(1L))) ||
+      any(vapply(saidas, canonico, character(1L)) %in%
+        vapply(protegidos, canonico, character(1L)))) {
+    stop("Saida da validacao nao pode substituir a entrada, a producao ou outra rodada.")
+  }
+  # 3.5. Exibir o calendario das janelas configuradas (padrao: cinco).
   for (ano in anos) {
     p <- periodos[[as.character(ano)]]
     message("Rodada ", ano, ": treino ", p$inicio_treino, " a ", p$fim_treino,
@@ -116,27 +172,42 @@ executar_validacao_sarimax <- function(config = config_validacao_sarimax) {
       " (", p$meses_teste, " meses sem reajuste).")
   }
 
+  # 3.6. Preparar o reuso anual antes de iniciar o cluster.
   # Reuso opcional: somente o teste 2025 de 12 meses tem a origem da referencia.
   # As quatro janelas padrao 2021--2025 a 2024--2025 exigem novos ajustes.
   existente <- if (config$reutilizar_2025 && 2025L %in% anos && fim == 2025L) {
     preparar_reuso_sarimax_2025(config$referencia_2025, dados, localidades,
       periodos[["2025"]], produtor)
   } else NULL
+  # ---- INICIO DO CICLO DE VIDA DO CLUSTER ----------------------------------
+  # 3.7. Criar o cluster uma unica vez, somente se houver ajustes novos.
+  # Um unico cluster compartilhado entre as janelas. Somente o processo pai
+  # grava os CSVs; os workers calculam localidades e devolvem seus resultados.
+  processos <- if (config$paralelo) min(as.integer(config$processos), length(localidades)) else 1L
+  novas <- anos[!(anos == 2025L & !is.null(existente))]
+  if (length(novas) && processos > 1L) {
+    cluster <- produtor$criar_cluster_sarimax(processos,
+      config$script_pre_compilacao, raiz = getwd())
+    # 3.8. O on.exit do bloco 3.0 ja possui este cluster: vai encerra-lo ao
+    # sair, inclusive por erro/interrupcao, antes de imprimir o tempo total.
+  }
+  message("Validacao SARIMAX: ", length(localidades), " localidades; ",
+    if (is.null(cluster)) 1L else length(cluster), " processo(s) de calculo; janelas em sequencia.")
+  # 3.9. Executar JANELAS EM SEQUENCIA, reutilizando o mesmo cluster.
+  # O paralelismo entre LOCALIDADES ocorre no bloco 6 do pre-compilador.
   resultados <- list()
   falhas <- character()
   for (ano in anos) {
     p <- periodos[[as.character(ano)]]
-    nome <- recortes$nome_arquivo_validacao("SARIMAX", ano, fim)
-    saida <- file.path(config$pasta_saida, nome)
-    if (tolower(normalizePath(saida, winslash = "/", mustWork = FALSE)) ==
-        tolower(normalizePath(config$referencia_2025, winslash = "/", mustWork = FALSE))) {
-      stop("Saida da validacao nao pode substituir o CSV de producao de 2025.")
-    }
+    saida <- saidas[[as.character(ano)]]
+    inicio_rodada <- proc.time()[["elapsed"]]
     resultado <- tryCatch({
+      # 3.9.a. Janela anual reaproveitada: copiar sem iniciar novos ajustes.
       if (ano == 2025L && !is.null(existente)) {
         produtor$gravar_csv_sarimax(existente, saida)
         origem <- "Referencia de 2025 reaproveitada; sem novo ajuste"
       } else {
+        # 3.9.b. Nova projecao: recortar e passar a rodada ao pre-compilador.
         # O controlador faz o recorte e entrega somente treino+teste da rodada.
         # Dados posteriores ao fim de teste configurado nao chegam ao produtor.
         corte <- recortes$separar_treino_teste(dados, p)
@@ -145,21 +216,28 @@ executar_validacao_sarimax <- function(config = config_validacao_sarimax) {
           meses_teste = p$meses_teste, passos_futuro = 0L,
           localidades = localidades)
         produtor$executar_sarimax_local(configuracao,
-          dados_basicos = rbind(corte$treino, corte$teste))
+          dados_basicos = rbind(corte$treino, corte$teste), cluster = cluster)
         origem <- "Novo ajuste do pre-compilador SARIMAX"
       }
-      message("Rodada ", ano, " concluida: ", saida, " (", origem, ").")
+      if (!file.exists(saida)) stop("O pre-compilador nao gravou a saida solicitada: ", saida)
+      segundos <- proc.time()[["elapsed"]] - inicio_rodada
+      message("Rodada ", ano, " concluida: ", saida, " (", origem,
+        "; ", round(segundos, 1L), " s).")
       data.frame(Ano_teste = ano, Inicio_treino = p$inicio_treino,
         Fim_treino = p$fim_treino, Inicio_teste = p$inicio_teste,
-        Fim_teste = p$fim_teste, Meses_teste = p$meses_teste, Origem = origem, Arquivo = saida,
+        Fim_teste = p$fim_teste, Meses_teste = p$meses_teste, Origem = origem,
+        Arquivo = saida, Segundos = segundos,
         stringsAsFactors = FALSE)
     }, error = function(e) {
+      # 3.9.c. Registrar falha da janela e permitir o processamento das demais.
       falhas <<- c(falhas, paste0(ano, ": ", conditionMessage(e)))
       message("Rodada ", ano, " nao concluida: ", conditionMessage(e))
       NULL
     })
     if (!is.null(resultado)) resultados[[as.character(ano)]] <- resultado
   }
+  # 3.10. Apresentar resumo somente no console. Ao retornar ou falhar, o
+  # on.exit de 3.0 encerra o cluster, restaura opcoes e imprime o TEMPO TOTAL.
   if (!length(resultados)) stop("Nenhuma rodada concluida. Consulte o console.")
   if (length(falhas)) warning(paste(falhas, collapse = "\n"), call. = FALSE)
   resumo <- do.call(rbind, resultados)
@@ -167,7 +245,9 @@ executar_validacao_sarimax <- function(config = config_validacao_sarimax) {
   print(resumo, row.names = FALSE)
   invisible(resumo)
 }
+# ---- FIM DO CICLO DE VIDA: LIMPEZA REGISTRADA NO CONTROLADOR -------------------
 
+# ---- 4. ENTRADA: EXECUTAR VALIDACAO OU CARREGAR SOMENTE AS FUNCOES --------------
 if (!isTRUE(getOption("frota.validacao_sarimax.apenas_funcoes", FALSE))) {
   executar_validacao_sarimax()
 }

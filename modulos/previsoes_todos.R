@@ -1,12 +1,12 @@
 # ==============================================================================
-# previsoes_todos.R | COMPARACAO-NOVE-MODELOS-9-REFATORACAO
+# previsoes_todos.R | COMPARACAO-NOVE-MODELOS-12-VALIDACAO-MULTIMODELOS
 #
 # Previsões: nove arquivos CSV em Previsoes_output/.
 # Históricos e gradientes: permanecem em data/.
 # Este módulo não treina modelos nem altera arquivos de dados.
 # ==============================================================================
 
-previsoes_todos_versao <- "COMPARACAO-NOVE-MODELOS-9-REFATORACAO"
+previsoes_todos_versao <- "COMPARACAO-NOVE-MODELOS-12-VALIDACAO-MULTIMODELOS"
 
 # As ordens de leitura, exibição e preferência do Real são independentes.
 pt_catalogo_modelos <- data.frame(
@@ -869,7 +869,18 @@ pt_tabela_erros_projecoes <- function(
 
 # --- Validação temporal: CSVs independentes produzidos na máquina local --------
 
-pt_carregar_validacao_sarimax <- function(previsoes_dir, ano_teste, ano_fim_teste = ano_teste) {
+pt_localidades_validacao <- function(dados, abrangencia = c("geral", "municipio")) {
+  abrangencia <- match.arg(abrangencia)
+  if (!"Localidade" %in% names(dados)) return(character())
+  locais <- unique(pt_normalizar_localidade(dados$Localidade))
+  locais <- locais[!is.na(locais) & nzchar(locais)]
+  estado <- pt_chave_localidade(locais) == "PARA"
+  sort(locais[if (abrangencia == "geral") estado else !estado])
+}
+
+pt_carregar_validacao <- function(
+    previsoes_dir, ano_teste, ano_fim_teste = ano_teste, modelos = pt_modelos
+) {
   ano <- pt_numero(ano_teste)
   fim <- pt_numero(ano_fim_teste)
   if (length(ano) != 1L || !is.finite(ano) || ano != floor(ano) ||
@@ -880,28 +891,42 @@ pt_carregar_validacao_sarimax <- function(previsoes_dir, ano_teste, ano_fim_test
   fim <- as.integer(fim)
   inicio_teste <- as.Date(sprintf("%04d-01-01", ano))
   fim_teste <- as.Date(sprintf("%04d-12-01", fim))
-  arquivo <- if (ano == fim) sprintf("previsoes_sarimax_teste_%04d.csv", ano) else
-    sprintf("previsoes_sarimax_teste_%04d_%04d.csv", ano, fim)
+  modelos <- pt_modelos[pt_modelos %in% modelos]
+  sufixo <- if (ano == fim) sprintf("%04d", ano) else sprintf("%04d_%04d", ano, fim)
+  especificacoes <- data.frame(Modelo = modelos,
+    Arquivo = file.path(modelos, paste0("previsoes_", tolower(modelos),
+      "_teste_", sufixo, ".csv")), stringsAsFactors = FALSE)
+  pasta <- file.path(previsoes_dir, "validacao_temporal")
+  presentes <- file.exists(file.path(pasta, especificacoes$Arquivo)) &
+    !dir.exists(file.path(pasta, especificacoes$Arquivo))
+  # Um único leitor para todos os modelos. Ausências são esperadas enquanto
+  # os outros controladores não tiverem gerado os CSVs da mesma janela.
   carregado <- pt_carregar_previsoes(
-    file.path(previsoes_dir, "validacao_temporal", "SARIMAX"),
-    especificacoes = data.frame(Modelo = "SARIMAX", Arquivo = arquivo)
+    pasta, especificacoes = especificacoes[presentes, , drop = FALSE]
   )
-  dados <- carregado$dados
-  if (nrow(dados)) {
+  carregado$modelos_ausentes <- modelos[!presentes]
+  if (length(carregado$modelos_ausentes)) carregado$avisos <- c(carregado$avisos,
+    paste0("Sem arquivo desta janela: ", paste(carregado$modelos_ausentes, collapse = ", "), "."))
+  # Rejeitar somente o modelo inválido; a chave inclui Modelo para que dois
+  # algoritmos possam prever a mesma localidade no mesmo mês.
+  for (modelo in unique(carregado$dados$Modelo)) {
+    dados <- carregado$dados[carregado$dados$Modelo == modelo, , drop = FALSE]
     erro <- if (anyNA(dados$Data) || anyNA(dados$Localidade) ||
         any(!nzchar(dados$Localidade)) || any(format(dados$Data, "%d") != "01")) {
       "Há datas ou localidades inválidas no CSV da rodada."
-    } else if (anyDuplicated(dados[c("Localidade", "Data")])) {
+    } else if (anyDuplicated(dados[c("Modelo", "Localidade", "Data")])) {
       "Há meses duplicados por localidade no CSV da rodada."
     } else if (any(dados$Data > fim_teste) || any(is.finite(dados$Previsao) &
         (dados$Data < inicio_teste | dados$Data > fim_teste))) {
       "O CSV contém datas ou previsões fora da janela de teste solicitada."
     } else NULL
     if (!is.null(erro)) {
-      carregado$dados <- pt_previsoes_vazias()
-      carregado$avisos <- c(carregado$avisos, erro)
+      carregado$dados <- carregado$dados[carregado$dados$Modelo != modelo, , drop = FALSE]
+      carregado$avisos <- c(carregado$avisos, paste0(modelo, ": ", erro))
     }
   }
+  rownames(carregado$dados) <- NULL
+  carregado$modelos_disponiveis <- modelos[modelos %in% unique(carregado$dados$Modelo)]
   carregado$ano_teste <- ano
   carregado$ano_fim_teste <- fim
   carregado$meses_teste <- as.integer(12L * (fim - ano + 1L))
@@ -910,37 +935,56 @@ pt_carregar_validacao_sarimax <- function(previsoes_dir, ano_teste, ano_fim_test
   carregado
 }
 
-pt_avaliar_validacao_sarimax <- function(carregado, localidade) {
+pt_avaliar_validacao <- function(carregado, localidade, periodo = c("comum", "individual")) {
+  periodo <- match.arg(periodo)
   dados <- pt_filtrar_previsoes_localidade(carregado$dados, localidade)
   if (!nrow(dados)) stop("Não há resultados da rodada para esta localidade.", call. = FALSE)
   datas_treino <- dados$Data[dados$Data < carregado$inicio_teste]
   fim_treino <- carregado$inicio_teste - 1L
   fim_escala <- as.Date(format(fim_treino, "%Y-%m-01"))
-  inicio_escala <- if (length(datas_treino)) min(datas_treino) else fim_escala
+  # Uma escala por localidade/origem, compartilhada por total e anos. Quando
+  # SARIMAX está presente, preservar seu histórico de referência, mesmo se
+  # outro modelo trouxer um início diferente. Nunca incluir Real do teste.
+  datas_referencia <- dados$Data[dados$Modelo == "SARIMAX" & dados$Data < carregado$inicio_teste]
+  inicio_escala <- if (length(datas_referencia)) min(datas_referencia) else
+    if (length(datas_treino)) min(datas_treino) else fim_escala
   projecoes <- pt_dados_projecoes_comparacao(dados, localidade)
   modelos <- pt_modelos[pt_modelos %in% unique(projecoes$Modelo)]
-  preparacao <- if (length(modelos)) pt_preparar_avaliacao(
-    dados, localidade, modelos, inicio_escala, fim_escala) else NULL
-  tabela <- pt_tabela_erros_projecoes(projecoes, dados, localidade,
-    periodo = "individual", inicio_escala = inicio_escala,
-    fim_escala = fim_escala, preparacao = preparacao)
+  modelos_locais <- pt_modelos[pt_modelos %in% unique(dados$Modelo)]
   datas <- seq(carregado$inicio_teste, carregado$fim_teste, by = "month")
-  idx <- match(datas, dados$Data)
-  mensal <- data.frame(Data = datas, Real = dados$Real[idx],
-    Previsao = dados$Previsao[idx])
-  mensal$Horizonte <- seq_along(datas)
+  # Calendário completo por modelo: match nunca cruza dados de algoritmos.
+  mensal <- do.call(rbind, lapply(modelos_locais, function(modelo) {
+    parte <- dados[dados$Modelo == modelo, , drop = FALSE]
+    idx <- match(datas, parte$Data)
+    data.frame(Modelo = modelo, Data = datas, Real = parte$Real[idx],
+      Previsao = parte$Previsao[idx], Horizonte = seq_along(datas))
+  }))
   mensal$Real[!is.finite(mensal$Real)] <- NA_real_
   mensal$Previsao[!is.finite(mensal$Previsao)] <- NA_real_
   mensal$Erro <- mensal$Real - mensal$Previsao
   mensal$Erro_absoluto <- abs(mensal$Erro)
   mensal$Erro[!is.finite(mensal$Erro)] <- NA_real_
   mensal$Erro_absoluto[!is.finite(mensal$Erro_absoluto)] <- NA_real_
+  pareados <- is.finite(mensal$Real) & is.finite(mensal$Previsao)
+  datas_modelos <- split(as.numeric(mensal$Data[pareados]), mensal$Modelo[pareados])
+  datas_comuns <- if (length(datas_modelos)) Reduce(intersect, datas_modelos) else numeric()
+  mensal$Usado_metricas <- pareados &
+    (periodo == "individual" | as.numeric(mensal$Data) %in% datas_comuns)
+  preparacao <- if (length(modelos)) pt_preparar_avaliacao(
+    dados, localidade, modelos, inicio_escala, fim_escala) else NULL
+  # Aplicar a mesma amostra comum no total e em cada bloco anual. Modelos
+  # sem qualquer par observado não eliminam a avaliação dos demais.
+  if (periodo == "comum" && !is.null(preparacao)) preparacao$reais <-
+    preparacao$reais[as.numeric(preparacao$reais$Data) %in% datas_comuns, , drop = FALSE]
+  tabela <- pt_tabela_erros_projecoes(projecoes, dados, localidade,
+    periodo = periodo, inicio_escala = inicio_escala,
+    fim_escala = fim_escala, preparacao = preparacao)
   # Mesmo treino/escala em todos os blocos anuais desta origem. Permite ler
   # o comportamento em 2025 separadamente do erro de todo o horizonte.
   anuais <- lapply(seq.int(carregado$ano_teste, carregado$ano_fim_teste), function(ano) {
     parte <- projecoes[format(projecoes$Data, "%Y") == as.character(ano), , drop = FALSE]
     erros <- pt_tabela_erros_projecoes(parte, dados, localidade,
-      periodo = "individual", inicio_escala = inicio_escala,
+      periodo = periodo, inicio_escala = inicio_escala,
       fim_escala = fim_escala, preparacao = preparacao)
     if (!nrow(erros)) return(NULL)
     erros$Ano <- as.integer(ano)
@@ -948,11 +992,50 @@ pt_avaliar_validacao_sarimax <- function(carregado, localidade) {
   })
   anuais <- Filter(Negate(is.null), anuais)
   anuais <- if (length(anuais)) do.call(rbind, anuais) else data.frame()
+  cobertura <- do.call(rbind, lapply(modelos_locais, function(modelo) {
+    parte <- mensal[mensal$Modelo == modelo, , drop = FALSE]
+    treino <- dados$Data[dados$Modelo == modelo & dados$Data < carregado$inicio_teste]
+    data.frame(Modelo = modelo,
+      Inicio_treino = if (length(treino)) min(treino) else as.Date(NA_character_),
+      Fim_treino = if (length(treino)) max(treino) else as.Date(NA_character_),
+      Meses_Real = sum(is.finite(parte$Real)),
+      Meses_Previsao = sum(is.finite(parte$Previsao)),
+      Meses_pareados = sum(is.finite(parte$Real) & is.finite(parte$Previsao)),
+      Meses_avaliados = sum(parte$Usado_metricas))
+  }))
+  avisos <- character()
+  ausentes_local <- setdiff(carregado$modelos_disponiveis, modelos_locais)
+  if (length(ausentes_local)) avisos <- c(avisos, paste0(
+    "Sem dados desta localidade: ", paste(ausentes_local, collapse = ", "), "."))
+  reais <- pt_reais_projecao(dados, localidade)
+  divergentes <- reais$Valores_distintos > 1L
+  if (any(divergentes)) avisos <- c(avisos, paste0(
+    "Valores reais divergentes entre modelos em ", sum(divergentes), " mês(es), sendo ",
+    sum(divergentes & reais$Data >= carregado$inicio_teste),
+    " no teste. Cada métrica usa o Real do próprio CSV; confira a comparação."))
+  if (nrow(tabela)) {
+    sem_referencia <- nzchar(tabela$Motivo_RelMAE)
+    if (any(sem_referencia)) avisos <- c(avisos, paste0(
+      tabela$Modelo[sem_referencia], ": RelMAE indisponível. ", tabela$Motivo_RelMAE[sem_referencia]))
+  }
   list(completos = dados, projecoes = projecoes, metricas = tabela,
     metricas_anuais = anuais, mensal = mensal, meses_teste = carregado$meses_teste,
     inicio_treino = if (length(datas_treino)) min(datas_treino) else as.Date(NA_character_),
     fim_treino = fim_treino,
-    meses_validos = sum(is.finite(mensal$Real) & is.finite(mensal$Previsao)))
+    meses_validos = length(datas_comuns), cobertura = cobertura, avisos = avisos,
+    periodo = periodo)
+}
+
+# Compatibilidade com chamadas anteriores; o painel usa as funções genéricas.
+pt_carregar_validacao_sarimax <- function(previsoes_dir, ano_teste, ano_fim_teste = ano_teste) {
+  pt_carregar_validacao(previsoes_dir, ano_teste, ano_fim_teste, modelos = "SARIMAX")
+}
+
+pt_avaliar_validacao_sarimax <- function(carregado, localidade) {
+  resultado <- pt_avaliar_validacao(carregado, localidade, periodo = "individual")
+  resultado$mensal <- resultado$mensal[c("Data", "Real", "Previsao", "Horizonte", "Erro", "Erro_absoluto")]
+  resultado[c("completos", "projecoes", "metricas", "metricas_anuais", "mensal",
+    "meses_teste", "inicio_treino", "fim_treino", "meses_validos")]
 }
 
 pt_desenhar_projecoes <- function(
@@ -1538,32 +1621,43 @@ previsoes_todos_ui <- function(id) {
 
     shiny::fluidRow(
       bs4Dash::box(
-        title = "Validação temporal — SARIMAX",
+        title = "Validação temporal — comparação de modelos",
         width = 12,
         status = "info",
         solidHeader = FALSE,
         maximizable = TRUE,
         shiny::tags$p(
-          "Cada rodada ajusta o modelo até dezembro do ano anterior e prevê ",
+          "Cada rodada ajusta os modelos até dezembro do ano anterior e prevê ",
           "continuamente até dezembro de 2025, sem incorporar os valores reais do teste. ",
           "Escolha a janela e a localidade para comparar ",
-          "os valores reais com as previsões. Os erros são calculados ao abrir esta seção."
+          "os valores reais com as previsões dos arquivos disponíveis. ",
+          "Clique na legenda para mostrar ou ocultar modelos no gráfico. ",
+          "Os erros são calculados ao abrir esta seção."
         ),
         shiny::fluidRow(
           shiny::column(4, shiny::selectInput(ns("ano_validacao"),
             "JANELA DE TESTE", choices = c("2021–2025 (60 meses)" = "2021",
               "2022–2025 (48 meses)" = "2022", "2023–2025 (36 meses)" = "2023",
-              "2024–2025 (24 meses)" = "2024"), selected = "2024")),
-          shiny::column(8, shiny::selectInput(ns("local_validacao"),
+              "2024–2025 (24 meses)" = "2024", "2025 (12 meses)" = "2025"), selected = "2024")),
+          shiny::column(3, shiny::selectInput(ns("tipo_local_validacao"),
+            "ABRANGÊNCIA", choices = c("Pará (Geral)" = "geral", "Município" = "municipio"),
+            selected = "geral")),
+          shiny::column(5, shiny::selectInput(ns("local_validacao"),
             "LOCALIDADE DA VALIDAÇÃO", choices = character()))
         ),
+        shiny::selectInput(ns("periodo_metricas_validacao"),
+          "PERÍODO DAS MÉTRICAS DA VALIDAÇÃO",
+          choices = c("Meses comuns aos modelos com dados observados" = "comum",
+            "Período disponível de cada modelo" = "individual"), selected = "comum"),
         shiny::uiOutput(ns("status_validacao")),
         echarts4r::echarts4rOutput(ns("grafico_validacao"),
           width = "100%", height = "460px"),
         shiny::tags$p(
           "A linha tracejada marca o fim do treino. Somente os meses da janela de teste ",
           "entram nos erros. MASE e RMSSE usam a escala sazonal do treino desta ",
-          "rodada. RelMAE usa o próprio SARIMAX como referência, sendo 1 quando definido."
+          "rodada. RelMAE compara cada modelo com o SARIMAX da mesma janela, nos mesmos ",
+          "meses; fica indisponível quando não há referência válida. ",
+          "A legenda filtra somente as curvas; as tabelas seguem o período escolhido acima."
         ),
         shiny::tags$h4("Erros do período completo"),
         DT::dataTableOutput(ns("metricas_validacao")),
@@ -2346,60 +2440,98 @@ previsoes_todos_server <- function(
     arquivos_validacao <- shiny::reactive({
       input$recarregar
       ano <- if (length(input$ano_validacao)) input$ano_validacao else 2024L
-      pt_carregar_validacao_sarimax(previsoes_dir, ano, ano_fim_teste = 2025L)
+      pt_carregar_validacao(previsoes_dir, ano, ano_fim_teste = 2025L)
+    })
+
+    tipo_validacao <- shiny::reactive({
+      if (isTRUE(input$tipo_local_validacao == "municipio")) "municipio" else "geral"
+    })
+
+    localidades_validacao <- shiny::reactive({
+      pt_localidades_validacao(arquivos_validacao()$dados, tipo_validacao())
+    })
+
+    # Resolver a seleção também no servidor evita usar a série anterior enquanto
+    # o navegador aplica a atualização dos filtros de abrangência/janela.
+    localidade_validacao <- shiny::reactive({
+      locais <- localidades_validacao()
+      atual <- input$local_validacao
+      if (length(atual) == 1L && !is.na(atual) && atual %in% locais) atual else head(locais, 1L)
     })
 
     shiny::observe({
-      locais <- sort(unique(arquivos_validacao()$dados$Localidade))
-      locais <- locais[!is.na(locais) & nzchar(locais)]
-      atual <- shiny::isolate(input$local_validacao)
-      inicial <- if ("Pará" %in% locais) "Pará" else head(locais, 1L)
-      selecionado <- if (length(atual) == 1L && atual %in% locais) atual else inicial
+      locais <- localidades_validacao()
+      selecionado <- shiny::isolate(localidade_validacao())
+      rotulos <- ifelse(pt_chave_localidade(locais) == "PARA", "Pará (Geral)", locais)
       shiny::updateSelectInput(session, "local_validacao",
-        choices = locais, selected = selecionado)
+        choices = stats::setNames(locais, rotulos), selected = selecionado)
     })
 
     dados_validacao <- shiny::reactive({
       carregado <- arquivos_validacao()
       shiny::validate(shiny::need(nrow(carregado$dados) > 0L,
         "Sem resultados desta rodada. Execute o controlador local e recarregue os arquivos."))
-      shiny::req(input$local_validacao)
-      shiny::validate(shiny::need(input$local_validacao %in% carregado$dados$Localidade,
-        "Selecione uma localidade disponível nesta rodada."))
-      pt_avaliar_validacao_sarimax(carregado, input$local_validacao)
+      shiny::validate(shiny::need(length(localidades_validacao()) > 0L,
+        if (tipo_validacao() == "municipio") "Não há resultados municipais nesta janela." else
+          "Não há resultado de Pará (Geral) nesta janela."))
+      localidade <- localidade_validacao()
+      shiny::req(length(localidade) == 1L)
+      periodo <- if (isTRUE(input$periodo_metricas_validacao == "individual")) "individual" else "comum"
+      pt_avaliar_validacao(carregado, localidade, periodo = periodo)
     })
 
     output$status_validacao <- shiny::renderUI({
       carregado <- arquivos_validacao()
-      avisos <- if (length(carregado$avisos)) shiny::tags$details(
-        shiny::tags$summary("Avisos da rodada"),
-        shiny::tags$ul(lapply(carregado$avisos, shiny::tags$li)))
+      listar_avisos <- function(x) if (length(x)) shiny::tags$details(
+        shiny::tags$summary("Avisos da rodada"), shiny::tags$ul(lapply(x, shiny::tags$li)))
       if (!nrow(carregado$dados)) return(shiny::tagList(
         shiny::tags$p("Ainda não há resultados válidos para ", carregado$ano_teste,
           "–", carregado$ano_fim_teste,
-          ". Execute validar_sarimax.r na máquina local e clique em Recarregar arquivos."),
-        avisos))
-      shiny::req(input$local_validacao)
+          ". Execute os controladores na máquina local e clique em Recarregar arquivos."),
+        listar_avisos(carregado$avisos)))
+      if (!length(localidades_validacao())) return(shiny::tagList(
+        shiny::tags$p(if (tipo_validacao() == "municipio") {
+          "Não há previsões municipais nos arquivos desta janela. Gere a validação dos municípios e recarregue os arquivos."
+        } else "Não há resultado de Pará (Geral) nos arquivos desta janela."),
+        listar_avisos(carregado$avisos)))
       dados <- dados_validacao()
       escala <- attr(dados$metricas, "escala_sazonal")
+      localidade <- localidade_validacao()
       shiny::tagList(
+        shiny::tags$p(shiny::tags$strong("Localidade: "),
+          if (tipo_validacao() == "geral") "Pará (Geral)" else localidade),
         shiny::tags$p(shiny::tags$strong(paste0("Teste: ",
           format(carregado$inicio_teste, "%m/%Y"), " a ",
           format(carregado$fim_teste, "%m/%Y"), ". ")),
-          "Treino: ", if (is.na(dados$inicio_treino)) "início não informado" else
-            format(dados$inicio_treino, "%m/%Y"), " a ",
-          format(dados$fim_treino, "%m/%Y"), "; ", dados$meses_validos,
-          " de ", carregado$meses_teste, " meses com Real e Previsão disponíveis."),
+          "Fim do treino: ", format(dados$fim_treino, "%m/%Y"), ". Modelos: ",
+          paste(dados$cobertura$Modelo, collapse = ", "), "."),
+        shiny::tags$ul(lapply(seq_len(nrow(dados$cobertura)), function(i) {
+          linha <- dados$cobertura[i, ]
+          shiny::tags$li(shiny::tags$strong(paste0(linha$Modelo, ": ")),
+            linha$Meses_pareados, " de ", carregado$meses_teste,
+            " meses com Real e Previsão disponíveis; ", linha$Meses_avaliados,
+            " avaliados. Real: ", linha$Meses_Real, "; previsão: ", linha$Meses_Previsao,
+            ". Histórico de treino no CSV: ",
+            if (is.na(linha$Inicio_treino)) "não informado" else paste0(
+              format(linha$Inicio_treino, "%m/%Y"), " a ", format(linha$Fim_treino, "%m/%Y")), ".")
+        })),
+        shiny::tags$p(shiny::tags$small(if (dados$periodo == "comum") paste0(
+          "Métricas nos meses comuns: ", dados$meses_validos,
+          ". Modelos sem pares observados não restringem a amostra dos demais.") else
+            "Métricas no período disponível de cada modelo; as amostras podem ser diferentes.")),
         shiny::tags$p(shiny::tags$small(
           "Real e previsão pertencem ao CSV da rodada selecionada. ",
           "Este painel não utiliza as previsões de produção nem seus históricos de perdas.")),
         if (!is.null(escala)) shiny::tags$p(shiny::tags$small(
-          "Escala sazonal do treino: ", escala$pares, " pares anuais conhecidos. ",
+          "Escala sazonal do treino: ", format(escala$inicio, "%m/%Y"), " a ",
+          format(escala$fim, "%m/%Y"), "; fonte: ",
+          if (is.na(escala$fonte)) "indisponível" else escala$fonte,
+          "; ", escala$pares, " pares anuais conhecidos. ",
           if (!is.finite(escala$mae) || escala$mae <= 0 ||
               !is.finite(escala$mse) || escala$mse <= 0) {
             "MASE/RMSSE indisponíveis quando a escala não tem pares válidos ou é nula."
           } else "ME = Real − Previsão: positivo indica subestimação.")),
-        avisos
+        listar_avisos(c(carregado$avisos, dados$avisos))
       )
     })
 
@@ -2408,7 +2540,7 @@ previsoes_todos_server <- function(
       shiny::validate(shiny::need(nrow(dados$projecoes) > 0L,
         "Não há previsões válidas para desenhar nesta rodada."))
       pt_desenhar_projecoes(dados$projecoes, dados$completos,
-        input$local_validacao, data_corte = dados$fim_treino)
+        localidade_validacao(), data_corte = dados$fim_treino)
     })
 
     output$metricas_validacao <- DT::renderDataTable({
@@ -2420,15 +2552,16 @@ previsoes_todos_server <- function(
 
     output$mensal_validacao <- DT::renderDataTable({
       tabela <- dados_validacao()$mensal
-      tabela <- tabela[c("Data", "Horizonte", "Real", "Previsao", "Erro", "Erro_absoluto")]
+      tabela <- tabela[c("Modelo", "Data", "Horizonte", "Real", "Previsao", "Erro", "Erro_absoluto", "Usado_metricas")]
       tabela$Data <- format(tabela$Data, "%m/%Y")
-      names(tabela) <- c("Mês", "Horizonte (meses)", "Real", "Previsão",
-        "Erro (Real − Previsão)", "Erro absoluto")
+      tabela$Usado_metricas <- ifelse(tabela$Usado_metricas, "Sim", "Não")
+      names(tabela) <- c("Modelo", "Mês", "Horizonte (meses)", "Real", "Previsão",
+        "Erro (Real − Previsão)", "Erro absoluto", "Usado nas métricas")
       DT::datatable(tabela, rownames = FALSE,
         options = list(pageLength = 12, lengthChange = FALSE, scrollX = TRUE,
           dom = "tip", ordering = FALSE,
           columnDefs = list(list(targets = "_all", defaultContent = "N/A")))) |>
-        DT::formatRound(columns = names(tabela)[-(1:2)], digits = 2)
+        DT::formatRound(columns = c("Real", "Previsão", "Erro (Real − Previsão)", "Erro absoluto"), digits = 2)
     })
 
     output$anuais_validacao <- DT::renderDataTable({

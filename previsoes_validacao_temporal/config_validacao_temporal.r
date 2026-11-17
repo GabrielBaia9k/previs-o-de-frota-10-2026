@@ -1,4 +1,4 @@
-# VALIDACAO-TEMPORAL-3-PASTA-EXATA
+# VALIDACAO-TEMPORAL-5-XGBOOST-PROPHET-PARALELO
 # Configuracao unica para os controladores de validacao; somente R base.
 # source() define configuracao/funcoes: nao le dados, treina ou preve.
 
@@ -11,24 +11,34 @@ config_validacao_temporal <- list(
   entrada = "data/veiculos_por_mes_municipio.csv",
   script_recortes = "previsoes_validacao_temporal/config_validacao_temporal.r",
   inicio_treino = as.Date("2016-01-01"),
-  anos_teste = c(2021L, 2022L, 2023L, 2024L),
+  anos_teste = c(2021L, 2022L, 2023L, 2024L, 2025L),
   ano_fim_teste = 2025L,
-  localidades = c("PARÁ (Geral)"), # NULL para todas; ou um vetor de municipios.
+  localidades = NULL, # Todos os municipios e PARA (Geral); ou vetor de localidades.
+  paralelo = TRUE, processos = 6L, # PSOCK local; janelas continuam sequenciais.
+  reutilizar_2025 = TRUE, # Reaproveitar o teste anual do CSV de producao conferido.
   pasta_saida_base = "Previsoes_output/validacao_temporal",
   modelos = list(
     SARIMAX = list(
+      # SARIMAX A: calendario das janelas, com treino desde 2015 e teste ate 2025.
       # Excecao historica: preservar o inicio do SARIMAX publicado.
       inicio_treino = as.Date("2015-01-01"),
+      anos_teste = c(2021L, 2022L, 2023L, 2024L, 2025L),
+      # SARIMAX B: localidades e paralelismo (janelas continuam sequenciais).
+      localidades = NULL, # Todos os municipios e PARA (Geral).
+      paralelo = TRUE,
+      processos = 6L, # Seis processos R de calculo; Windows/PSOCK.
+      # SARIMAX C: produtor e referencia opcional para o teste anual de 12 meses.
       script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_sarimax.r",
       reutilizar_2025 = TRUE,
       referencia_2025 = "Previsoes_output/previsoes_sarimax_pre_comp.csv"
     ),
     XGBOOST = list(
-      script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_xgboost.r"
+      script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_xgboost.r",
+      referencia_2025 = "Previsoes_output/previsoes_xgboost_pre_comp.csv"
     ),
     PROPHET = list(
-      # Cadastro para a proxima etapa; nao executa nem cria seu controlador.
-      script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_prophet.r"
+      script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_prophet.r",
+      referencia_2025 = "Previsoes_output/previsoes_prophet_pre_comp.csv"
     )
   )
 )
