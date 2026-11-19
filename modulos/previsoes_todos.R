@@ -1,12 +1,12 @@
 # ==============================================================================
-# previsoes_todos.R | COMPARACAO-NOVE-MODELOS-12-VALIDACAO-MULTIMODELOS
+# previsoes_todos.R | COMPARACAO-NOVE-MODELOS-13-EXPORTACAO-VALIDACAO
 #
 # Previsões: nove arquivos CSV em Previsoes_output/.
 # Históricos e gradientes: permanecem em data/.
 # Este módulo não treina modelos nem altera arquivos de dados.
 # ==============================================================================
 
-previsoes_todos_versao <- "COMPARACAO-NOVE-MODELOS-12-VALIDACAO-MULTIMODELOS"
+previsoes_todos_versao <- "COMPARACAO-NOVE-MODELOS-13-EXPORTACAO-VALIDACAO"
 
 # As ordens de leitura, exibição e preferência do Real são independentes.
 pt_catalogo_modelos <- data.frame(
@@ -1038,6 +1038,173 @@ pt_avaliar_validacao_sarimax <- function(carregado, localidade) {
     "meses_teste", "inicio_treino", "fim_treino", "meses_validos")]
 }
 
+# --- Preparacao compartilhada e escrita dos downloads --------------------------
+# Recebe os arquivos ja lidos no cache. Avaliar uma vez por origem preserva a
+# amostra comum e a escala usadas no total e nos respectivos blocos anuais.
+pt_preparar_exportacao_validacao <- function(arquivos, localidade, periodo = "comum") {
+  periodo <- match.arg(periodo, c("comum", "individual"))
+  if (length(localidade) != 1L || is.na(localidade) || !nzchar(localidade)) {
+    stop("Selecione uma localidade para exportar a validacao.", call. = FALSE)
+  }
+  rodadas <- list()
+  avisos <- character()
+  for (carregado in arquivos) {
+    origem <- paste0(carregado$ano_teste, "–", carregado$ano_fim_teste)
+    if (length(carregado$avisos)) avisos <- c(avisos, paste0(origem, ": ", carregado$avisos))
+    locais <- pt_filtrar_previsoes_localidade(carregado$dados, localidade)
+    if (!nrow(locais)) {
+      avisos <- c(avisos, paste0(origem, ": sem resultados para ", localidade, "."))
+      next
+    }
+    avaliacao <- tryCatch(pt_avaliar_validacao(carregado, localidade, periodo),
+      error = function(e) {
+        avisos <<- c(avisos, paste0(origem, ": ", conditionMessage(e)))
+        NULL
+      })
+    if (is.null(avaliacao)) next
+    if (length(avaliacao$avisos)) avisos <- c(avisos, paste0(origem, ": ", avaliacao$avisos))
+    if (!nrow(avaliacao$projecoes)) {
+      avisos <- c(avisos, paste0(origem, ": sem previsoes validas para ", localidade, "."))
+      next
+    }
+    rodadas[[as.character(carregado$ano_teste)]] <- list(
+      ano_teste = carregado$ano_teste, ano_fim_teste = carregado$ano_fim_teste,
+      inicio_teste = carregado$inicio_teste, fim_teste = carregado$fim_teste,
+      meses_teste = carregado$meses_teste, localidade = localidade,
+      avaliacao = avaliacao)
+  }
+  list(rodadas = rodadas, avisos = unique(avisos))
+}
+
+# CSV para Excel/R: UTF-8 com BOM, separador ';', decimal ',', NA explicito,
+# datas ISO e valores originais, sem aplicar o arredondamento visual do DT.
+pt_gravar_csv_validacao <- function(tabela, arquivo) {
+  if (!is.data.frame(tabela) || !nrow(tabela)) stop("Nao ha resultados para exportar.", call. = FALSE)
+  for (nome in names(tabela)) {
+    if (inherits(tabela[[nome]], "Date")) tabela[[nome]] <- format(tabela[[nome]], "%Y-%m-%d")
+    if (is.character(tabela[[nome]])) tabela[[nome]] <- enc2utf8(tabela[[nome]])
+    if (is.numeric(tabela[[nome]])) tabela[[nome]][!is.finite(tabela[[nome]])] <- NA_real_
+  }
+  utils::write.csv2(tabela, arquivo, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+  bytes <- readBin(arquivo, what = "raw", n = file.info(arquivo)$size)
+  writeBin(c(as.raw(c(239L, 187L, 191L)), bytes), arquivo)
+  invisible(arquivo)
+}
+
+# --- Exportacao da validacao: transformar resultados ja avaliados --------------
+# rodadas: lista de registros com ano_teste, ano_fim_teste, inicio_teste,
+# fim_teste (primeiro dia do ultimo mes), meses_teste, localidade e avaliacao.
+# avaliacao e o retorno existente de pt_avaliar_validacao(); estas funcoes
+# nao leem CSVs, nao ajustam modelos e nao recalculam nenhuma metrica.
+
+pt_metadados_exportacao_validacao <- function(rodada, modelos) {
+  avaliacao <- rodada$avaliacao
+  cobertura <- avaliacao$cobertura
+  n <- length(modelos)
+  idx <- match(as.character(modelos), cobertura$Modelo)
+  ultimo_mes <- as.Date(format(as.Date(rodada$fim_teste), "%Y-%m-01"))
+  # A grade mensal do leitor usa o primeiro dia; no CSV o fim da janela
+  # identifica o ultimo dia do mes. Data/Horizonte continuam na grade original.
+  fim_teste <- seq(ultimo_mes, by = "month", length.out = 2L)[2L] - 1L
+  data.frame(
+    Localidade = rep(as.character(rodada$localidade), n),
+    Modelo = as.character(modelos),
+    Ano_inicio_teste = rep(as.integer(rodada$ano_teste), n),
+    Ano_fim_teste = rep(as.integer(rodada$ano_fim_teste), n),
+    Inicio_treino_modelo = as.Date(cobertura$Inicio_treino[idx]),
+    Ultimo_mes_historico_treino = as.Date(cobertura$Fim_treino[idx]),
+    Corte_treino = rep(as.Date(avaliacao$fim_treino), n),
+    Inicio_teste = rep(as.Date(rodada$inicio_teste), n),
+    Fim_teste = rep(fim_teste, n),
+    Meses_teste = rep(as.integer(rodada$meses_teste), n),
+    Periodo_metricas = rep(as.character(avaliacao$periodo), n),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Uma linha por origem/modelo/mes da localidade selecionada. Inclui lacunas
+# mensais e flag Usado_metricas; nao aplica filtro de legenda ou paginacao DT.
+pt_exportar_previsoes_validacao <- function(rodadas) {
+  partes <- lapply(rodadas, function(rodada) {
+    tabela <- rodada$avaliacao$mensal
+    if (is.null(tabela) || !nrow(tabela)) return(NULL)
+    campos <- c("Data", "Horizonte", "Real", "Previsao", "Erro", "Erro_absoluto", "Usado_metricas")
+    valores <- tabela[campos]
+    valores$Data <- as.Date(valores$Data)
+    valores$Horizonte <- as.integer(valores$Horizonte)
+    valores$Usado_metricas <- as.logical(valores$Usado_metricas)
+    for (nome in c("Real", "Previsao", "Erro", "Erro_absoluto")) {
+      valores[[nome]][!is.finite(valores[[nome]])] <- NA_real_
+    }
+    cbind(pt_metadados_exportacao_validacao(rodada, tabela$Modelo), valores)
+  })
+  partes <- Filter(Negate(is.null), partes)
+  if (!length(partes)) return(data.frame())
+  resultado <- do.call(rbind, partes)
+  resultado <- resultado[order(resultado$Ano_inicio_teste, resultado$Modelo, resultado$Data), , drop = FALSE]
+  rownames(resultado) <- NULL
+  resultado
+}
+
+# Uma linha por origem/modelo/escopo e, no escopo anual, ano previsto. TOTAL
+# tem Ano_avaliado=NA; o mesmo ano observado pode aparecer em varias origens.
+pt_exportar_metricas_validacao <- function(rodadas) {
+  partes <- lapply(rodadas, function(rodada) {
+    avaliacao <- rodada$avaliacao
+    # Copiar o atributo antes de consolidar tabelas. Os blocos anuais usam a
+    # mesma escala do total desta origem; nao estimar outra escala por ano.
+    escala <- attr(avaliacao$metricas, "escala_sazonal")
+    campos <- c("Inicio", "Fim", "Periodos_validos", "Periodos_MAPE", "MAPE", "MAE", "RMSE", "R2",
+      "ME", "MASE", "RMSSE", "RelMAE", "MAE_SARIMAX_ref", "Motivo_RelMAE")
+    calendario <- seq(as.Date(rodada$inicio_teste), as.Date(rodada$fim_teste), by = "month")
+    anos_calendario <- as.integer(format(calendario, "%Y"))
+    blocos <- lapply(c("total", "anual"), function(escopo) {
+      tabela <- if (escopo == "total") avaliacao$metricas else avaliacao$metricas_anuais
+      if (is.null(tabela) || !nrow(tabela)) return(NULL)
+      n <- nrow(tabela)
+      anos <- if (escopo == "total") rep(NA_integer_, n) else as.integer(tabela$Ano)
+      limites <- lapply(seq_len(n), function(i) {
+        # Limites NOMINAIS na grade mensal. Inicio/Fim da tabela original
+        # identificam os meses efetivamente avaliados, com suas contagens.
+        indices <- if (escopo == "total") seq_along(calendario) else which(anos_calendario == anos[i])
+        if (length(indices)) as.integer(range(indices)) else c(NA_integer_, NA_integer_)
+      })
+      valores <- tabela[campos]
+      attr(valores, "escala_sazonal") <- NULL
+      valores$Inicio <- as.Date(valores$Inicio)
+      valores$Fim <- as.Date(valores$Fim)
+      for (nome in c("MAPE", "MAE", "RMSE", "R2", "ME", "MASE", "RMSSE", "RelMAE", "MAE_SARIMAX_ref")) {
+        valores[[nome]][!is.finite(valores[[nome]])] <- NA_real_
+      }
+      escala_colunas <- data.frame(
+        Fonte_escala = rep(if (is.null(escala$fonte)) NA_character_ else as.character(escala$fonte), n),
+        Inicio_escala = rep(if (is.null(escala$inicio)) as.Date(NA_character_) else as.Date(escala$inicio), n),
+        Fim_escala = rep(if (is.null(escala$fim)) as.Date(NA_character_) else as.Date(escala$fim), n),
+        Periodo_escala = rep(if (is.null(escala$periodo)) NA_integer_ else as.integer(escala$periodo), n),
+        Pares_escala = rep(if (is.null(escala$pares)) NA_integer_ else as.integer(escala$pares), n),
+        MAE_escala = rep(if (is.null(escala$mae)) NA_real_ else as.numeric(escala$mae), n),
+        MSE_escala = rep(if (is.null(escala$mse)) NA_real_ else as.numeric(escala$mse), n),
+        stringsAsFactors = FALSE
+      )
+      for (nome in c("MAE_escala", "MSE_escala")) escala_colunas[[nome]][!is.finite(escala_colunas[[nome]])] <- NA_real_
+      cbind(pt_metadados_exportacao_validacao(rodada, tabela$Modelo),
+        data.frame(Escopo = rep(escopo, n), Ano_avaliado = anos,
+          Horizonte_inicial = vapply(limites, function(x) x[1L], integer(1L)),
+          Horizonte_final = vapply(limites, function(x) x[2L], integer(1L)),
+          stringsAsFactors = FALSE), valores, escala_colunas)
+    })
+    blocos <- Filter(Negate(is.null), blocos)
+    if (length(blocos)) do.call(rbind, blocos) else NULL
+  })
+  partes <- Filter(Negate(is.null), partes)
+  if (!length(partes)) return(data.frame())
+  resultado <- do.call(rbind, partes)
+  resultado <- resultado[order(resultado$Ano_inicio_teste, resultado$Modelo,
+    match(resultado$Escopo, c("total", "anual")), resultado$Ano_avaliado, na.last = TRUE), , drop = FALSE]
+  rownames(resultado) <- NULL
+  resultado
+}
+
 pt_desenhar_projecoes <- function(
     projecoes,
     dados_completos,
@@ -1638,7 +1805,7 @@ previsoes_todos_ui <- function(id) {
           shiny::column(4, shiny::selectInput(ns("ano_validacao"),
             "JANELA DE TESTE", choices = c("2021–2025 (60 meses)" = "2021",
               "2022–2025 (48 meses)" = "2022", "2023–2025 (36 meses)" = "2023",
-              "2024–2025 (24 meses)" = "2024", "2025 (12 meses)" = "2025"), selected = "2024")),
+              "2024–2025 (24 meses)" = "2024", "Últimos 12 meses (2025)" = "2025"), selected = "2024")),
           shiny::column(3, shiny::selectInput(ns("tipo_local_validacao"),
             "ABRANGÊNCIA", choices = c("Pará (Geral)" = "geral", "Município" = "municipio"),
             selected = "geral")),
@@ -1649,6 +1816,17 @@ previsoes_todos_ui <- function(id) {
           "PERÍODO DAS MÉTRICAS DA VALIDAÇÃO",
           choices = c("Meses comuns aos modelos com dados observados" = "comum",
             "Período disponível de cada modelo" = "individual"), selected = "comum"),
+        shiny::tags$div(
+          style = "display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:4px 0 8px;",
+          shiny::downloadButton(ns("baixar_previsoes_validacao_csv"), "Previsões CSV",
+            class = "btn-sm", style = "padding:3px 8px;font-size:12px;",
+            title = "Baixar previsões de todas as janelas e modelos da localidade selecionada"),
+          shiny::downloadButton(ns("baixar_metricas_validacao_csv"), "Métricas CSV",
+            class = "btn-sm", style = "padding:3px 8px;font-size:12px;",
+            title = "Baixar métricas totais e anuais de todas as janelas da localidade selecionada"),
+          shiny::tags$small(class = "text-muted", "Todas as janelas da localidade selecionada.")
+        ),
+        shiny::uiOutput(ns("status_exportacao_validacao")),
         shiny::uiOutput(ns("status_validacao")),
         echarts4r::echarts4rOutput(ns("grafico_validacao"),
           width = "100%", height = "460px"),
@@ -2478,6 +2656,78 @@ previsoes_todos_server <- function(
       shiny::req(length(localidade) == 1L)
       periodo <- if (isTRUE(input$periodo_metricas_validacao == "individual")) "individual" else "comum"
       pt_avaliar_validacao(carregado, localidade, periodo = periodo)
+    })
+
+    # Downloads: caches separados da janela exibida, avaliados sob demanda.
+    # Recarregar invalida os arquivos; localidade/politica invalidam somente
+    # a avaliacao. Os dois exportadores compartilham o mesmo conjunto de rodadas.
+    arquivos_exportacao_validacao <- shiny::reactive({
+      input$recarregar
+      stats::setNames(lapply(2021:2025, function(ano) {
+        pt_carregar_validacao(previsoes_dir, ano, ano_fim_teste = 2025L)
+      }), as.character(2021:2025))
+    })
+
+    rodadas_exportacao_validacao <- shiny::reactive({
+      localidade <- localidade_validacao()
+      shiny::req(length(localidade) == 1L)
+      periodo <- if (isTRUE(input$periodo_metricas_validacao == "individual")) "individual" else "comum"
+      pt_preparar_exportacao_validacao(arquivos_exportacao_validacao(), localidade, periodo)
+    })
+
+    ultimo_download_validacao <- shiny::reactiveVal(NULL)
+    shiny::observeEvent(list(input$recarregar, localidade_validacao(), input$periodo_metricas_validacao), {
+      ultimo_download_validacao(NULL)
+    }, ignoreInit = TRUE)
+
+    nome_download_validacao <- function(tipo) {
+      localidade <- localidade_validacao()
+      shiny::req(length(localidade) == 1L)
+      nome <- tolower(gsub(" ", "_", pt_chave_localidade(localidade), fixed = TRUE))
+      periodo <- if (isTRUE(input$periodo_metricas_validacao == "individual")) "individual" else "comum"
+      paste0("validacao_", tipo, "_", nome, "_2021_2025_", periodo, ".csv")
+    }
+
+    concluir_download_validacao <- function(tabela, arquivo, preparado) {
+      if (!nrow(tabela)) {
+        ultimo_download_validacao(list(anos = character(), avisos = preparado$avisos))
+        shiny::showNotification("Sem resultados disponíveis para exportar nesta localidade.", type = "warning")
+        shiny::validate(shiny::need(FALSE, "Sem resultados disponíveis para exportar."))
+      }
+      ultimo_download_validacao(NULL)
+      pt_gravar_csv_validacao(tabela, arquivo)
+      ultimo_download_validacao(list(anos = names(preparado$rodadas), avisos = preparado$avisos))
+    }
+
+    output$baixar_previsoes_validacao_csv <- shiny::downloadHandler(
+      filename = function() nome_download_validacao("previsoes"),
+      contentType = "text/csv; charset=utf-8",
+      content = function(arquivo) {
+        preparado <- rodadas_exportacao_validacao()
+        concluir_download_validacao(pt_exportar_previsoes_validacao(preparado$rodadas), arquivo, preparado)
+      }
+    )
+
+    output$baixar_metricas_validacao_csv <- shiny::downloadHandler(
+      filename = function() nome_download_validacao("metricas"),
+      contentType = "text/csv; charset=utf-8",
+      content = function(arquivo) {
+        preparado <- rodadas_exportacao_validacao()
+        concluir_download_validacao(pt_exportar_metricas_validacao(preparado$rodadas), arquivo, preparado)
+      }
+    )
+
+    # Somente ocupa espaco depois de um download; arquivos/modelos ausentes
+    # ficam em detalhes, sem impedir a exportacao das rodadas disponiveis.
+    output$status_exportacao_validacao <- shiny::renderUI({
+      estado <- ultimo_download_validacao()
+      if (is.null(estado)) return(NULL)
+      texto <- if (length(estado$anos)) paste0("Janelas incluídas no CSV: ",
+        paste(estado$anos, collapse = ", "), ".") else "Nenhuma janela disponível para esta localidade."
+      if (!length(estado$avisos)) return(shiny::tags$small(class = "text-muted", texto))
+      shiny::tags$details(style = "font-size:12px;margin-bottom:6px;",
+        shiny::tags$summary(texto, " Avisos de cobertura"),
+        shiny::tags$ul(lapply(estado$avisos, shiny::tags$li)))
     })
 
     output$status_validacao <- shiny::renderUI({

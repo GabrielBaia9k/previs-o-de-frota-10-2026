@@ -1,4 +1,4 @@
-# VALIDACAO-TEMPORAL-5-XGBOOST-PROPHET-PARALELO
+# VALIDACAO-TEMPORAL-7-GRU-GLOBAL-CAUSAL
 # Configuracao unica para os controladores de validacao; somente R base.
 # source() define configuracao/funcoes: nao le dados, treina ou preve.
 
@@ -14,7 +14,7 @@ config_validacao_temporal <- list(
   anos_teste = c(2021L, 2022L, 2023L, 2024L, 2025L),
   ano_fim_teste = 2025L,
   localidades = NULL, # Todos os municipios e PARA (Geral); ou vetor de localidades.
-  paralelo = TRUE, processos = 6L, # PSOCK local; janelas continuam sequenciais.
+  paralelo = TRUE, processos = 6L, # PSOCK local; a unidade paralela depende do modelo.
   reutilizar_2025 = TRUE, # Reaproveitar o teste anual do CSV de producao conferido.
   pasta_saida_base = "Previsoes_output/validacao_temporal",
   modelos = list(
@@ -39,6 +39,20 @@ config_validacao_temporal <- list(
     PROPHET = list(
       script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_prophet.r",
       referencia_2025 = "Previsoes_output/previsoes_prophet_pre_comp.csv"
+    ),
+    LSTM = list(
+      script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_LSTM.r",
+      # Recalcular inclusive 2025: o CSV antigo pode usar preparacao com
+      # vazamento. Igualdade de Real nao comprova a origem causal da previsao.
+      reutilizar_2025 = FALSE,
+      referencia_2025 = "Previsoes_output/previsoes_lstm_pre_comp.csv"
+    ),
+    GRU = list(
+      # Uma rede GLOBAL por origem; ate cinco origens simultaneas, teto seis.
+      # localidades filtra somente a exportacao, preservando o treino global.
+      script_pre_compilacao = "Previsoes_pre_compilacao/pre_compilar_GRU_global.r",
+      reutilizar_2025 = FALSE,
+      referencia_2025 = "Previsoes_output/previsoes_gru_global_pre_comp.csv"
     )
   )
 )
