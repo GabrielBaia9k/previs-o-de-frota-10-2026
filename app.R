@@ -75,7 +75,8 @@ ui <- dashboardPage(
           "Projeções", icon = icon("project-diagram"), # Titulo pai (sem tabName)
           menuSubItem("Previsão de Frota", tabName = "previsoes", icon = icon("chart-line")),
           menuSubItem("Modelagem", tabName = "modelagem", icon = icon("cogs")), # Exemplo de nova rota
-          menuSubItem("Comparação dos Algoritmos",tabName = "previsoes_todos",icon = icon("chart-line"))
+          menuSubItem("Comparação dos Algoritmos",tabName = "previsoes_todos",icon = icon("chart-line")),
+          menuSubItem("Análise Multivariada", tabName = "previsoes_multivariada", icon = icon("chart-line"))
       ),
       
       # --- Grupo de Informações Gerais ---
@@ -1258,6 +1259,7 @@ ui <- dashboardPage(
       tabItem(tabName = "previsoes", fluidPage(previsoes_ui("previsoes"))),
       tabItem(tabName = "modelagem", fluidPage(modelagem_ui("modelagem"))),
       tabItem(tabName = "previsoes_todos",fluidPage(previsoes_todos_ui("previsoes_todos"))),
+      tabItem(tabName = "previsoes_multivariada", fluidPage(previsoes_multivariada_ui("previsoes_multivariada"))),
       # --- ABA: RELATÓRIO PDF ---
       tabItem(tabName = "relatorio_pdf", fluidPage(mod_pdf_ui("pdf_ui"))),
       
@@ -1438,6 +1440,7 @@ server <- function(input, output, session) {
   previsoes_server("previsoes")
   modelagem_server("modelagem")
   previsoes_todos_server("previsoes_todos")
+  previsoes_multivariada_server("previsoes_multivariada")
   mod_pdf_server("pdf_ui")
 }
 

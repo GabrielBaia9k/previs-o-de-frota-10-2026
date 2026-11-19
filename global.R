@@ -162,6 +162,7 @@ modulos <- c(
   "modulos/frota_pa.R",
   "modulos/previsoes.R",
   "modulos/previsoes_todos.R",
+  "modulos/previsoes_multivariada.R",
   "modulos/modelagem.R",
   "modulos/mod_pdf.R"
 )
